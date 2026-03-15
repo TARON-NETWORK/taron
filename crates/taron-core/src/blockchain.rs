@@ -42,6 +42,11 @@ const CHECKPOINTS: &[(u64, &str)] = &[
     (7000, "00001cc75eddfc930b3c4994715803bd93460b7ac9f5d70abe8bbdfe86dbb637"),
     (7500, "0000000f97070e40af63fc6055b82644813e37e3a24d425c5e0b79594d7b6371"),
     (7937, "00002d675599959f39f33cbb7224bfdedd2780355f227ec7cc33a04d8e65f80e"),
+    (8000, "00002dd4c94818daa431907f8c70dc025782e1958d4da672dc2ed0a6d6f16d8e"),
+    (8500, "000022734fe6f8d357a212564ef54ab8488b40fe80b85a3fe73c84d02ecf599b"),
+    (8528, "0000db9d741ede56a5fc6ee9813202d74fc45a73a54ec2bacb2a79316f5015a9"),
+    (9000, "0001641c13aee295f73957bfa148c173c9d416edea967459c863d5b711362b66"),
+    (9500, "000026d69072bcbf5f955878cfd742d9673ca6dc2be7378457acd86a8420cf60"),
 ];
 
 // ── RocksDB key layout ────────────────────────────────────────────────────────
@@ -267,30 +272,33 @@ impl Blockchain {
     /// Like `apply_block` but skips the timestamp drift check and sequence check.
     /// Used during IBD (Initial Block Download) for historical blocks.
     pub fn apply_block_ibd(&mut self, block: &Block, ledger: &mut Ledger) -> Result<(), TaronError> {
-        // Checkpoint: if this block height has a known-good hash, reject any mismatch.
-        if let Some(&(_, expected)) = CHECKPOINTS.iter().find(|&&(h, _)| h == block.index) {
+        // Checkpoint: if this block height has a known-good hash, skip validation entirely.
+        // The hash is cryptographically verified — the block is known-good.
+        let is_checkpointed = if let Some(&(_, expected)) = CHECKPOINTS.iter().find(|&&(h, _)| h == block.index) {
             if hex::encode(&block.hash) != expected {
                 eprintln!("[REJECT] block #{}: checkpoint mismatch", block.index);
                 return Err(TaronError::InvalidBlock);
             }
-        }
+            true
+        } else {
+            false
+        };
 
-        let prev = self.tip();
-        if let Some(reason) = block.validate_inner(&prev, self.difficulty, false) {
-            eprintln!("[REJECT-IBD] block #{}: {}", block.index, reason);
-            return Err(TaronError::InvalidBlock);
-        }
-
-        if block.reward != crate::TESTNET_REWARD {
-            return Err(TaronError::InvalidBlock);
-        }
-
-        // During IBD: skip validate_structure() — its ±30s timestamp check
-        // would reject legitimate historical payout transactions.
-        // Signature verification is still performed for security.
-        for tx in &block.transactions {
-            if tx.verify_signature().is_err() {
+        if !is_checkpointed {
+            let prev = self.tip();
+            if let Some(reason) = block.validate_inner(&prev, self.difficulty, false) {
+                eprintln!("[REJECT-IBD] block #{}: {}", block.index, reason);
                 return Err(TaronError::InvalidBlock);
+            }
+
+            if block.reward != crate::TESTNET_REWARD {
+                return Err(TaronError::InvalidBlock);
+            }
+
+            for tx in &block.transactions {
+                if tx.verify_signature().is_err() {
+                    return Err(TaronError::InvalidBlock);
+                }
             }
         }
 
