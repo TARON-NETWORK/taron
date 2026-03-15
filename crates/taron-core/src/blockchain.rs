@@ -422,6 +422,37 @@ impl Blockchain {
 
         new_diff.max(1).min(30)
     }
+
+    /// Derive difficulty from recent block hashes after IBD.
+    /// Counts the minimum leading zero bits in the last DAA_WINDOW blocks.
+    pub fn recalibrate_difficulty_after_ibd(&mut self) {
+        let start = if self.height > DAA_WINDOW { self.height - DAA_WINDOW } else { 1 };
+        let mut min_zeros = 30u32;
+        for h in start..=self.height {
+            if let Some(block) = self.block_at(h) {
+                let zeros = Self::leading_zero_bits(&block.hash);
+                if zeros < min_zeros {
+                    min_zeros = zeros;
+                }
+            }
+        }
+        self.difficulty = min_zeros;
+        self.db.put(KEY_DIFF, &self.difficulty.to_le_bytes()).expect("rocksdb put diff");
+        eprintln!("[DAA] Recalibrated difficulty to {} after IBD", self.difficulty);
+    }
+
+    fn leading_zero_bits(hash: &[u8; 32]) -> u32 {
+        let mut zeros = 0u32;
+        for &byte in hash {
+            if byte == 0 {
+                zeros += 8;
+            } else {
+                zeros += byte.leading_zeros();
+                break;
+            }
+        }
+        zeros
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

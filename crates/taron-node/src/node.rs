@@ -1389,6 +1389,12 @@ async fn handle_messages(
                                 send_to_peer(out_tx, Message::GetBlocks { from, to })?;
                             } else {
                                 info!("[SYNC] IBD complete — height: {}", our_h);
+                                // Recalibrate difficulty from actual block hashes
+                                {
+                                    let mut ch = blockchain.write().await;
+                                    ch.recalibrate_difficulty_after_ibd();
+                                    cached_difficulty.store(ch.difficulty as u64, Ordering::Release);
+                                }
                                 // Release IBD slot so other peers can trigger future syncs
                                 *ibd_peer.lock().await = None;
                                 if !sync_ready.load(Ordering::Relaxed) {
