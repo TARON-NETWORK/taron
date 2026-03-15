@@ -943,6 +943,16 @@ async fn handle_messages(
 
                 // Block is ahead of our tip — request sync, don't process yet
                 if block_index > our_height + 1 {
+                    // Only request blocks if no other peer is already syncing
+                    let can_sync = {
+                        let mut slot = ibd_peer.lock().await;
+                        match *slot {
+                            None => { *slot = Some(addr); true }
+                            Some(a) if a == addr => true,
+                            _ => false,
+                        }
+                    };
+                    if !can_sync { continue; }
                     peer_height = Some(block_index);
                     info!(
                         "[SYNC] NewBlock #{} from {} is ahead of our height {} — requesting blocks {}..{}",
@@ -1040,24 +1050,39 @@ async fn handle_messages(
                     Err(e) => {
                         let our_h = blockchain.read().await.height();
                         if block_index > our_h + 1 {
-                            // We're behind — request all missing blocks from this peer
-                            peer_height = Some(block_index);
-                            info!(
-                                "[SYNC] NewBlock #{} from {} is ahead of our height {} — requesting blocks {}..{}",
-                                block_index, addr, our_h, our_h + 1, block_index
-                            );
-                            let from = our_h + 1;
-                            let to = (from + crate::sync::IBD_CHUNK_SIZE - 1).min(block_index);
-                            send_to_peer(out_tx, Message::GetBlocks { from, to })?;
+                            let can_sync = {
+                                let mut slot = ibd_peer.lock().await;
+                                match *slot {
+                                    None => { *slot = Some(addr); true }
+                                    Some(a) if a == addr => true,
+                                    _ => false,
+                                }
+                            };
+                            if can_sync {
+                                peer_height = Some(block_index);
+                                info!(
+                                    "[SYNC] NewBlock #{} from {} is ahead of our height {} — requesting blocks {}..{}",
+                                    block_index, addr, our_h, our_h + 1, block_index
+                                );
+                                let from = our_h + 1;
+                                let to = (from + crate::sync::IBD_CHUNK_SIZE - 1).min(block_index);
+                                send_to_peer(out_tx, Message::GetBlocks { from, to })?;
+                            }
                         } else if block_index == our_h + 1 {
                             // Next block but doesn't link to our tip — peer is on a fork
-                            // Request their recent blocks so the Blocks handler can deep-reorg
-                            let fork_start = if our_h > 10 { our_h - 10 } else { 1 };
-                            info!(
-                                "[FORK] NewBlock #{} from {} doesn't chain to our tip — requesting blocks {}..{} for reorg comparison",
-                                block_index, addr, fork_start, block_index
-                            );
-                            send_to_peer(out_tx, Message::GetBlocks { from: fork_start, to: block_index })?;
+                            // Don't request reorg blocks if IBD is running with another peer
+                            let can_reorg = {
+                                let slot = ibd_peer.lock().await;
+                                slot.is_none() || *slot == Some(addr)
+                            };
+                            if can_reorg {
+                                let fork_start = if our_h > 10 { our_h - 10 } else { 1 };
+                                info!(
+                                    "[FORK] NewBlock #{} from {} doesn't chain to our tip — requesting blocks {}..{} for reorg comparison",
+                                    block_index, addr, fork_start, block_index
+                                );
+                                send_to_peer(out_tx, Message::GetBlocks { from: fork_start, to: block_index })?;
+                            }
                         } else if block_index == our_h {
                             // Competing block at same height — check if it has a better (lower) hash
                             let current_tip = blockchain.read().await.tip();
@@ -1189,15 +1214,19 @@ async fn handle_messages(
             }
 
             Message::Blocks(blocks) => {
-                // Only the designated IBD peer can apply batched blocks.
-                // If another peer is driving IBD, ignore this batch entirely.
+                // Only one peer at a time can drive block sync.
+                // If no IBD peer set, claim it. If another peer has it, skip.
                 {
-                    let slot = ibd_peer.lock().await;
-                    if let Some(ibd_addr) = *slot {
-                        if ibd_addr != addr {
+                    let mut slot = ibd_peer.lock().await;
+                    match *slot {
+                        Some(ibd_addr) if ibd_addr != addr => {
                             debug!("[SYNC] Ignoring Blocks from {} — IBD peer is {}", addr, ibd_addr);
                             continue;
                         }
+                        None if !blocks.is_empty() => {
+                            *slot = Some(addr);
+                        }
+                        _ => {}
                     }
                 }
                 // Batch block sync — apply each in order, with deep reorg support
