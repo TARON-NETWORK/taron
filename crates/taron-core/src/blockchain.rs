@@ -175,7 +175,7 @@ impl Blockchain {
             .map(|&(h, _)| h)
             .max()
             .unwrap_or(0);
-        if target_height < min_safe {
+        if target_height < min_safe && target_height != 0 {
             eprintln!("[REORG] Refused: target {} is below checkpoint {}", target_height, min_safe);
             return Err(TaronError::InvalidBlock);
         }
