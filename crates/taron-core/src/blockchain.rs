@@ -25,28 +25,30 @@ const TARGET_BLOCK_MS: u64 = 30_000;
 
 /// Known-good block hashes. Any block at these heights must match exactly.
 /// A peer sending a different hash at a checkpoint height is on a fork — reject immediately.
-const CHECKPOINTS: &[(u64, &str)] = &[
-    (500,  "000004828f46af7c3c3052bac3ef571fc5b805031c66dcb009c427a51da92066"),
-    (1000, "000002972377958419f026f52436738aaa63be77143e711da89d1fb8f0742acb"),
-    (1500, "0000004b4c622a9f708071b52013e0f7844ec972e0582e0c9a46a30a84477f2c"),
-    (2000, "000016349cc475ac88095d4a720b63c9e3972bd7fcb8388ddb45265ebfbb2f67"),
-    (2500, "0000020bdb99172bb4dcb259a8eeb2e1211ec2ae8568a5e1e31eb9854a19018c"),
-    (3000, "0000016ef4c1110ffc985192a6a0769d540a5b71bb5885b0ff250a021bfbeb46"),
-    (3500, "0000058896f4201e9809feae8bdf990889997c533ee6937e556ecbe9a36077c8"),
-    (4000, "000000a46de28179b3c2b0a438a3828bda276fa390f08dd3e703e0fa7f3c9125"),
-    (4500, "00000d5b9bf012e94151c4256c258401dc592cb2b27d2119445f74a9fec654eb"),
-    (5000, "000006737ab2a41d65938e6c2b5b9556eec9bea25907ae4e14903950b00f1309"),
-    (5500, "000001d111bd6436d4a32e0ea6bc6c2d5359d06c7cd0af0dcaa619e255594a45"),
-    (6000, "00000465333670900ed90e49a10897aebc4a8a45d0c6eb68d2e14d4b0ffcec68"),
-    (6500, "00001bc7de79a5fec2b857e72345410c89aeb2e675d32776ad77a5e6b857e386"),
-    (7000, "00001cc75eddfc930b3c4994715803bd93460b7ac9f5d70abe8bbdfe86dbb637"),
-    (7500, "0000000f97070e40af63fc6055b82644813e37e3a24d425c5e0b79594d7b6371"),
-    (7937, "00002d675599959f39f33cbb7224bfdedd2780355f227ec7cc33a04d8e65f80e"),
-    (8000, "00002dd4c94818daa431907f8c70dc025782e1958d4da672dc2ed0a6d6f16d8e"),
-    (8500, "000022734fe6f8d357a212564ef54ab8488b40fe80b85a3fe73c84d02ecf599b"),
-    (8528, "0000db9d741ede56a5fc6ee9813202d74fc45a73a54ec2bacb2a79316f5015a9"),
-    (9000, "0001641c13aee295f73957bfa148c173c9d416edea967459c863d5b711362b66"),
-    (9500, "000026d69072bcbf5f955878cfd742d9673ca6dc2be7378457acd86a8420cf60"),
+// Checkpoints: (height, hash, difficulty_at_this_height)
+// Difficulty is stored so the DAA stays in sync during IBD.
+const CHECKPOINTS: &[(u64, &str, u32)] = &[
+    (500,  "000004828f46af7c3c3052bac3ef571fc5b805031c66dcb009c427a51da92066", 14),
+    (1000, "000002972377958419f026f52436738aaa63be77143e711da89d1fb8f0742acb", 14),
+    (1500, "0000004b4c622a9f708071b52013e0f7844ec972e0582e0c9a46a30a84477f2c", 14),
+    (2000, "000016349cc475ac88095d4a720b63c9e3972bd7fcb8388ddb45265ebfbb2f67", 14),
+    (2500, "0000020bdb99172bb4dcb259a8eeb2e1211ec2ae8568a5e1e31eb9854a19018c", 14),
+    (3000, "0000016ef4c1110ffc985192a6a0769d540a5b71bb5885b0ff250a021bfbeb46", 14),
+    (3500, "0000058896f4201e9809feae8bdf990889997c533ee6937e556ecbe9a36077c8", 15),
+    (4000, "000000a46de28179b3c2b0a438a3828bda276fa390f08dd3e703e0fa7f3c9125", 15),
+    (4500, "00000d5b9bf012e94151c4256c258401dc592cb2b27d2119445f74a9fec654eb", 15),
+    (5000, "000006737ab2a41d65938e6c2b5b9556eec9bea25907ae4e14903950b00f1309", 15),
+    (5500, "000001d111bd6436d4a32e0ea6bc6c2d5359d06c7cd0af0dcaa619e255594a45", 16),
+    (6000, "00000465333670900ed90e49a10897aebc4a8a45d0c6eb68d2e14d4b0ffcec68", 16),
+    (6500, "00001bc7de79a5fec2b857e72345410c89aeb2e675d32776ad77a5e6b857e386", 16),
+    (7000, "00001cc75eddfc930b3c4994715803bd93460b7ac9f5d70abe8bbdfe86dbb637", 17),
+    (7500, "0000000f97070e40af63fc6055b82644813e37e3a24d425c5e0b79594d7b6371", 18),
+    (7937, "00002d675599959f39f33cbb7224bfdedd2780355f227ec7cc33a04d8e65f80e", 17),
+    (8000, "00002dd4c94818daa431907f8c70dc025782e1958d4da672dc2ed0a6d6f16d8e", 17),
+    (8500, "000022734fe6f8d357a212564ef54ab8488b40fe80b85a3fe73c84d02ecf599b", 16),
+    (8528, "0000db9d741ede56a5fc6ee9813202d74fc45a73a54ec2bacb2a79316f5015a9", 16),
+    (9000, "0001641c13aee295f73957bfa148c173c9d416edea967459c863d5b711362b66", 17),
+    (9500, "000026d69072bcbf5f955878cfd742d9673ca6dc2be7378457acd86a8420cf60", 17),
 ];
 
 // ── RocksDB key layout ────────────────────────────────────────────────────────
@@ -176,8 +178,8 @@ impl Blockchain {
     pub fn revert_to_height(&mut self, target_height: u64, ledger: &mut Ledger) -> Result<Vec<Block>, TaronError> {
         // Never revert below a checkpoint we have already passed.
         let min_safe = CHECKPOINTS.iter()
-            .filter(|&&(h, _)| h <= self.height)
-            .map(|&(h, _)| h)
+            .filter(|&&(h, _, _)| h <= self.height)
+            .map(|&(h, _, _)| h)
             .max()
             .unwrap_or(0);
         if target_height < min_safe && target_height != 0 {
@@ -217,7 +219,7 @@ impl Blockchain {
     /// Validate and append a new block, then credit the miner in the ledger.
     /// The block is written to RocksDB atomically before returning.
     pub fn apply_block(&mut self, block: &Block, ledger: &mut Ledger) -> Result<(), TaronError> {
-        if let Some(&(_, expected)) = CHECKPOINTS.iter().find(|&&(h, _)| h == block.index) {
+        if let Some(&(_, expected, _)) = CHECKPOINTS.iter().find(|&&(h, _, _)| h == block.index) {
             if hex::encode(&block.hash) != expected {
                 eprintln!("[REJECT] block #{}: checkpoint mismatch", block.index);
                 return Err(TaronError::InvalidBlock);
@@ -272,14 +274,17 @@ impl Blockchain {
     /// Like `apply_block` but skips the timestamp drift check and sequence check.
     /// Used during IBD (Initial Block Download) for historical blocks.
     pub fn apply_block_ibd(&mut self, block: &Block, ledger: &mut Ledger) -> Result<(), TaronError> {
-        let highest_cp = CHECKPOINTS.last().map(|&(h, _)| h).unwrap_or(0);
+        let highest_cp = CHECKPOINTS.last().map(|&(h, _, _)| h).unwrap_or(0);
 
-        // Checkpoint hash verification at checkpoint heights
-        if let Some(&(_, expected)) = CHECKPOINTS.iter().find(|&&(h, _)| h == block.index) {
+        // Checkpoint hash verification + difficulty restore
+        if let Some(&(_, expected, cp_diff)) = CHECKPOINTS.iter().find(|&&(h, _, _)| h == block.index) {
             if hex::encode(&block.hash) != expected {
                 eprintln!("[REJECT] block #{}: checkpoint mismatch", block.index);
                 return Err(TaronError::InvalidBlock);
             }
+            // Restore the canonical difficulty at this checkpoint
+            self.difficulty = cp_diff;
+            self.db.put(KEY_DIFF, &self.difficulty.to_le_bytes()).expect("rocksdb put diff");
         }
 
         if block.index <= highest_cp {
@@ -325,7 +330,8 @@ impl Blockchain {
         self.height = block.index;
         self.db.put(KEY_HEIGHT, &self.height.to_le_bytes()).expect("rocksdb put height");
 
-        if self.height > 0 && self.height % DAA_WINDOW == 0 {
+        // Only run DAA above the last checkpoint — below, difficulty is set by checkpoints
+        if self.height > highest_cp && self.height > 0 && self.height % DAA_WINDOW == 0 {
             self.difficulty = self.compute_next_difficulty();
             self.db.put(KEY_DIFF, &self.difficulty.to_le_bytes()).expect("rocksdb put diff");
         }
