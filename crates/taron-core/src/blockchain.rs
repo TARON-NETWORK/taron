@@ -272,19 +272,26 @@ impl Blockchain {
     /// Like `apply_block` but skips the timestamp drift check and sequence check.
     /// Used during IBD (Initial Block Download) for historical blocks.
     pub fn apply_block_ibd(&mut self, block: &Block, ledger: &mut Ledger) -> Result<(), TaronError> {
-        // Checkpoint: if this block height has a known-good hash, skip validation entirely.
-        // The hash is cryptographically verified — the block is known-good.
-        let is_checkpointed = if let Some(&(_, expected)) = CHECKPOINTS.iter().find(|&&(h, _)| h == block.index) {
+        let highest_cp = CHECKPOINTS.last().map(|&(h, _)| h).unwrap_or(0);
+
+        // Checkpoint hash verification at checkpoint heights
+        if let Some(&(_, expected)) = CHECKPOINTS.iter().find(|&&(h, _)| h == block.index) {
             if hex::encode(&block.hash) != expected {
                 eprintln!("[REJECT] block #{}: checkpoint mismatch", block.index);
                 return Err(TaronError::InvalidBlock);
             }
-            true
-        } else {
-            false
-        };
+        }
 
-        if !is_checkpointed {
+        if block.index <= highest_cp {
+            // Below last checkpoint: only verify index + prev_hash linkage.
+            // Difficulty is not checked — the chain is anchored by checkpoint hashes.
+            let prev = self.tip();
+            if block.index != prev.index + 1 || block.prev_hash != prev.hash {
+                eprintln!("[REJECT-IBD] block #{}: bad index or prev_hash below checkpoint", block.index);
+                return Err(TaronError::InvalidBlock);
+            }
+        } else {
+            // Above last checkpoint: full validation
             let prev = self.tip();
             if let Some(reason) = block.validate_inner(&prev, self.difficulty, false) {
                 eprintln!("[REJECT-IBD] block #{}: {}", block.index, reason);
