@@ -423,35 +423,35 @@ impl Blockchain {
         new_diff.max(1).min(30)
     }
 
-    /// Derive difficulty from recent block hashes after IBD.
-    /// Counts the minimum leading zero bits in the last DAA_WINDOW blocks.
+    /// Replay the DAA from genesis using actual block timestamps.
+    /// This gives the exact same difficulty that the original chain computed.
     pub fn recalibrate_difficulty_after_ibd(&mut self) {
-        let start = if self.height > DAA_WINDOW { self.height - DAA_WINDOW } else { 1 };
-        let mut min_zeros = 30u32;
-        for h in start..=self.height {
-            if let Some(block) = self.block_at(h) {
-                let zeros = Self::leading_zero_bits(&block.hash);
-                if zeros < min_zeros {
-                    min_zeros = zeros;
-                }
+        let mut diff = crate::TESTNET_DIFFICULTY;
+        let mut h = DAA_WINDOW;
+        while h <= self.height {
+            if let (Some(end_b), Some(start_b)) = (self.block_at(h), self.block_at(h - DAA_WINDOW)) {
+                let actual_ms = end_b.timestamp.saturating_sub(start_b.timestamp);
+                let target_ms = TARGET_BLOCK_MS * DAA_WINDOW;
+                diff = if actual_ms == 0 {
+                    (diff + 1).min(30)
+                } else if actual_ms < target_ms / 4 {
+                    diff.saturating_add(2)
+                } else if actual_ms < target_ms {
+                    diff.saturating_add(1)
+                } else if actual_ms > target_ms * 4 {
+                    diff.saturating_sub(2)
+                } else if actual_ms > target_ms {
+                    diff.saturating_sub(1)
+                } else {
+                    diff
+                };
+                diff = diff.max(1).min(30);
             }
+            h += DAA_WINDOW;
         }
-        self.difficulty = min_zeros;
+        self.difficulty = diff;
         self.db.put(KEY_DIFF, &self.difficulty.to_le_bytes()).expect("rocksdb put diff");
-        eprintln!("[DAA] Recalibrated difficulty to {} after IBD", self.difficulty);
-    }
-
-    fn leading_zero_bits(hash: &[u8; 32]) -> u32 {
-        let mut zeros = 0u32;
-        for &byte in hash {
-            if byte == 0 {
-                zeros += 8;
-            } else {
-                zeros += byte.leading_zeros();
-                break;
-            }
-        }
-        zeros
+        eprintln!("[DAA] Recalibrated difficulty to {} after IBD (replayed from genesis)", self.difficulty);
     }
 }
 
