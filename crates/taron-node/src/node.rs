@@ -28,11 +28,15 @@ pub const DEFAULT_PORT: u16 = 8333;
 static GEO_CACHE: std::sync::LazyLock<Mutex<StdHashMap<IpAddr, String>>> =
     std::sync::LazyLock::new(|| Mutex::new(StdHashMap::new()));
 
-/// Best block broadcast per height — prevents relaying competing blocks that cause forks.
-/// Stores (height, hash) of the best block we've broadcast at the current tip.
-/// Only the block with the lowest hash at each height gets relayed to peers.
-static BEST_BROADCAST: std::sync::LazyLock<Mutex<(u64, [u8; 32])>> =
-    std::sync::LazyLock::new(|| Mutex::new((0, [0xff; 32])));
+/// Seed Relay Lock — prevents fork propagation by locking a height for 2 seconds.
+/// After the first valid block at height N is broadcast, competing blocks at the
+/// same height are rejected for RELAY_LOCK_DURATION (unless they have a strictly
+/// lower hash). Stores (height, hash, timestamp_of_first_broadcast).
+static RELAY_LOCK: std::sync::LazyLock<Mutex<(u64, [u8; 32], Instant)>> =
+    std::sync::LazyLock::new(|| Mutex::new((0, [0xff; 32], Instant::now())));
+
+/// How long the relay lock holds after the first block at a height is broadcast.
+const RELAY_LOCK_DURATION: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Resolve an IP address to an ISO 3166-1 alpha-2 country code via ip-api.com.
 /// Results are cached in-memory so each IP is looked up at most once.
@@ -577,10 +581,10 @@ impl TaronNode {
     pub async fn broadcast_block(&self, block: &Block) {
         let block_hash = hex::encode(&block.hash[..8]);
 
-        // Update BEST_BROADCAST tracker (pool-submitted blocks are always best)
+        // Update relay lock (pool-submitted blocks are always best)
         {
-            let mut best = BEST_BROADCAST.lock().await;
-            *best = (block.index, block.hash);
+            let mut lock = RELAY_LOCK.lock().await;
+            *lock = (block.index, block.hash, Instant::now());
         }
 
         let peers = self.peers.lock().await;
@@ -1112,22 +1116,28 @@ async fn handle_messages(
                             }
                         }
 
-                        // Relay block only if it's the best at this height (prevents fork propagation).
-                        // If we already broadcast a better block at the same height, send our
-                        // better block back to the sender instead — helps them converge.
+                        // Seed Relay Lock: only relay this block if no better block was
+                        // broadcast at this height within the last 2 seconds.
                         {
-                            let mut best = BEST_BROADCAST.lock().await;
-                            if block_index > best.0 || (block_index == best.0 && block.hash < best.1) {
-                                *best = (block_index, block.hash);
-                                drop(best);
+                            let mut lock = RELAY_LOCK.lock().await;
+                            let dominated = block_index == lock.0
+                                && block.hash >= lock.1
+                                && lock.2.elapsed() < RELAY_LOCK_DURATION;
+                            if block_index > lock.0 || !dominated {
+                                // New height or better hash — update lock and relay
+                                *lock = (block_index, block.hash, Instant::now());
+                                drop(lock);
                                 let pm = peers.lock().await;
                                 pm.broadcast(Message::NewBlock(block.clone()), Some(&addr));
                             } else {
-                                // We already broadcast a better block — send it to this peer
-                                drop(best);
+                                // Lock active — suppress relay and send our better block back
+                                drop(lock);
                                 let tip = blockchain.read().await.tip();
                                 if tip.index == block_index {
-                                    info!("[FORK-GUARD] Suppressed relay of block #{} (hash {}…) — better block already broadcast", block_index, block_hash_hex);
+                                    info!(
+                                        "[RELAY-LOCK] Blocked relay of #{} ({}…) — lock active for 2s",
+                                        block_index, block_hash_hex
+                                    );
                                     send_to_peer(out_tx, Message::NewBlock(tip))?;
                                 }
                             }
@@ -1221,11 +1231,11 @@ async fn handle_messages(
                                                     }
                                                 }
 
-                                                // Relay the better block — update BEST_BROADCAST tracker
+                                                // Relay the better block — update relay lock
                                                 {
-                                                    let mut best = BEST_BROADCAST.lock().await;
-                                                    *best = (block_index, block.hash);
-                                                    drop(best);
+                                                    let mut lock = RELAY_LOCK.lock().await;
+                                                    *lock = (block_index, block.hash, Instant::now());
+                                                    drop(lock);
                                                     let pm = peers.lock().await;
                                                     pm.broadcast(Message::NewBlock(block.clone()), Some(&addr));
                                                 }
@@ -1453,13 +1463,13 @@ async fn handle_messages(
                         }
                     }
                     if applied > 0 {
-                        // Update cached best hash and BEST_BROADCAST tracker
+                        // Update cached best hash and relay lock
                         {
                             let chain = blockchain.read().await;
                             let tip = chain.tip();
                             *cached_best_hash.write().await = hex::encode(&tip.hash);
-                            let mut best = BEST_BROADCAST.lock().await;
-                            *best = (tip.index, tip.hash);
+                            let mut lock = RELAY_LOCK.lock().await;
+                            *lock = (tip.index, tip.hash, Instant::now());
                         }
                         info!("[SYNC] Applied {} blocks from {} — height now: {}", applied, addr, last_height);
 
