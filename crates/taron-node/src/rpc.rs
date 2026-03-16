@@ -132,7 +132,7 @@ pub struct AccountsResponse {
 
 #[derive(Serialize)]
 pub struct PeerResponse {
-    pub addr: String,
+    pub country: String,
     pub direction: String,
     pub version: u8,
     pub user_agent: String,
@@ -150,6 +150,7 @@ pub struct SupplyPoint {
 #[derive(Serialize)]
 pub struct PeersResponse {
     pub peers: Vec<PeerResponse>,
+    pub countries: std::collections::HashMap<String, usize>,
     pub total: usize,
 }
 
@@ -484,18 +485,22 @@ async fn get_account_blocks(
 async fn get_peers(State(node): State<TaronNode>) -> Json<PeersResponse> {
     let pm = node.peers.lock().await;
     let now = Instant::now();
+    let mut countries: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let peers: Vec<PeerResponse> = pm.all_peers().iter()
-        .map(|p| PeerResponse {
-            // Redact peer IP — only expose port count and metadata, not addresses.
-            addr: format!("peer:{}", p.addr.port()),
-            direction: format!("{:?}", p.direction).to_lowercase(),
-            version: p.version,
-            user_agent: p.user_agent.clone(),
-            connected_secs: now.duration_since(p.connected_at).as_secs(),
+        .map(|p| {
+            let cc = if p.country.is_empty() { "??".to_string() } else { p.country.clone() };
+            *countries.entry(cc.clone()).or_insert(0) += 1;
+            PeerResponse {
+                country: cc,
+                direction: format!("{:?}", p.direction).to_lowercase(),
+                version: p.version,
+                user_agent: p.user_agent.clone(),
+                connected_secs: now.duration_since(p.connected_at).as_secs(),
+            }
         })
         .collect();
     let total = peers.len();
-    Json(PeersResponse { peers, total })
+    Json(PeersResponse { peers, countries, total })
 }
 
 async fn get_supply_history(State(node): State<TaronNode>) -> Json<Vec<SupplyPoint>> {

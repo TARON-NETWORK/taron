@@ -46,6 +46,8 @@ pub struct PeerInfo {
     pub last_seen: Instant,
     /// Behavior score — starts at 0, decremented for misbehavior. Ban at -100.
     pub score: i32,
+    /// ISO 3166-1 alpha-2 country code (resolved from IP via geo-lookup).
+    pub country: String,
     /// Channel for sending messages to this peer's writer task.
     /// None until the peer handler sets it up.
     #[allow(clippy::type_complexity)]
@@ -170,6 +172,7 @@ impl PeerManager {
             user_agent: String::new(),
             last_seen: now,
             score: 0,
+            country: String::new(),
             broadcast_tx: None,
         });
         *self.connections_per_ip.entry(ip).or_insert(0) += 1;
@@ -223,6 +226,13 @@ impl PeerManager {
     pub fn set_broadcast_tx(&mut self, addr: &SocketAddr, tx: UnboundedSender<Message>) {
         if let Some(peer) = self.peers.get_mut(addr) {
             peer.broadcast_tx = Some(tx);
+        }
+    }
+
+    /// Set the country code for a peer (from geo-lookup).
+    pub fn set_country(&mut self, addr: &SocketAddr, country: String) {
+        if let Some(peer) = self.peers.get_mut(addr) {
+            peer.country = country;
         }
     }
 

@@ -1,8 +1,8 @@
 //! TaronNode — main P2P node orchestrating TCP gossip, mempool, peer management,
 //! and the blockchain (chain of blocks).
 
-use std::collections::HashSet;
-use std::net::SocketAddr;
+use std::collections::{HashMap as StdHashMap, HashSet};
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -23,6 +23,39 @@ use crate::finality::NodeFinalityManager;
 
 /// Default TCP listen port.
 pub const DEFAULT_PORT: u16 = 8333;
+
+/// In-memory cache: IP → ISO country code. Shared across all lookup calls.
+static GEO_CACHE: std::sync::LazyLock<Mutex<StdHashMap<IpAddr, String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(StdHashMap::new()));
+
+/// Resolve an IP address to an ISO 3166-1 alpha-2 country code via ip-api.com.
+/// Results are cached in-memory so each IP is looked up at most once.
+async fn geo_lookup(ip: IpAddr) -> String {
+    // Check cache first
+    {
+        let cache = GEO_CACHE.lock().await;
+        if let Some(cc) = cache.get(&ip) {
+            return cc.clone();
+        }
+    }
+    // Skip private/loopback IPs
+    if ip.is_loopback() || ip.is_unspecified() {
+        return "LOCAL".into();
+    }
+    let url = format!("http://ip-api.com/json/{}?fields=countryCode", ip);
+    let cc = match reqwest::get(&url).await {
+        Ok(resp) => {
+            resp.json::<serde_json::Value>().await
+                .ok()
+                .and_then(|v| v.get("countryCode").and_then(|c| c.as_str().map(String::from)))
+                .unwrap_or_default()
+        }
+        Err(_) => String::new(),
+    };
+    let mut cache = GEO_CACHE.lock().await;
+    cache.insert(ip, cc.clone());
+    cc
+}
 
 /// Node configuration.
 #[derive(Debug, Clone)]
@@ -447,6 +480,19 @@ impl TaronNode {
 
             info!("Incoming connection from {}", addr);
 
+            // Geo-lookup in background (non-blocking)
+            {
+                let peers_geo = self.peers.clone();
+                let ip = addr.ip();
+                let addr_geo = addr;
+                tokio::spawn(async move {
+                    let cc = geo_lookup(ip).await;
+                    if !cc.is_empty() {
+                        peers_geo.lock().await.set_country(&addr_geo, cc);
+                    }
+                });
+            }
+
             let mempool = self.mempool.clone();
             let peers = self.peers.clone();
             let known = self.peer_known_txs.clone();
@@ -607,6 +653,19 @@ async fn connect_to_peer(
     set_tcp_keepalive(&stream);
 
     info!("Connected to peer {}", addr);
+
+    // Geo-lookup in background (non-blocking)
+    {
+        let peers_geo = peers.clone();
+        let ip = addr.ip();
+        let addr_geo = addr;
+        tokio::spawn(async move {
+            let cc = geo_lookup(ip).await;
+            if !cc.is_empty() {
+                peers_geo.lock().await.set_country(&addr_geo, cc);
+            }
+        });
+    }
 
     // Split stream into read/write halves for concurrent access
     let (mut read_half, mut write_half) = stream.into_split();
