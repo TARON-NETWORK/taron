@@ -20,8 +20,23 @@ use crate::{Block, Ledger, TaronError};
 
 /// DAA: adjust difficulty every N blocks.
 const DAA_WINDOW: u64 = 10;
-/// DAA: target time per block in milliseconds (30 seconds).
-const TARGET_BLOCK_MS: u64 = 30_000;
+/// DAA: base target time per block in milliseconds (30 seconds).
+const BASE_TARGET_BLOCK_MS: u64 = 30_000;
+/// ABC (Adaptive Block Cadence): adjust target block time every N blocks
+/// based on fork indicators (fast blocks = blocks arriving < FAST_BLOCK_THRESHOLD apart).
+const ABC_WINDOW: u64 = 50;
+/// Blocks with inter-block time below this threshold indicate fork-prone conditions.
+const FAST_BLOCK_THRESHOLD_MS: u64 = 5_000; // 5 seconds
+/// Minimum target block time (fastest the network can go).
+const MIN_TARGET_BLOCK_MS: u64 = 15_000; // 15 seconds
+/// Maximum target block time (slowest the network can go).
+const MAX_TARGET_BLOCK_MS: u64 = 60_000; // 60 seconds
+/// ABC cadence step: how much to adjust target per recalculation.
+const ABC_STEP_MS: u64 = 5_000; // 5 seconds
+/// Fork rate threshold above which we slow down (20% fast blocks).
+const ABC_SLOW_DOWN_THRESHOLD: f64 = 0.20;
+/// Fork rate threshold below which we speed up (5% fast blocks).
+const ABC_SPEED_UP_THRESHOLD: f64 = 0.05;
 
 /// Known-good block hashes. Any block at these heights must match exactly.
 /// A peer sending a different hash at a checkpoint height is on a fork — reject immediately.
@@ -65,6 +80,7 @@ fn block_key(index: u64) -> [u8; 10] {
 }
 const KEY_HEIGHT: &[u8] = b"meta:h";
 const KEY_DIFF:   &[u8] = b"meta:d";
+const KEY_TARGET: &[u8] = b"meta:t";
 
 // ── Blockchain ────────────────────────────────────────────────────────────────
 
@@ -75,6 +91,9 @@ pub struct Blockchain {
     pub height: u64,
     /// Proof-of-work difficulty (leading-zero bits required).
     pub difficulty: u32,
+    /// Adaptive Block Cadence: current target block time in milliseconds.
+    /// Adjusted every ABC_WINDOW blocks based on fork indicators.
+    pub target_block_ms: u64,
 }
 
 impl std::fmt::Debug for Blockchain {
@@ -268,6 +287,12 @@ impl Blockchain {
             self.db.put(KEY_DIFF, &self.difficulty.to_le_bytes()).expect("rocksdb put diff");
         }
 
+        // ABC: adjust target block time at every ABC_WINDOW boundary
+        if self.height > 0 && self.height % ABC_WINDOW == 0 {
+            self.target_block_ms = self.compute_adaptive_cadence();
+            self.db.put(KEY_TARGET, &self.target_block_ms.to_le_bytes()).expect("rocksdb put target");
+        }
+
         Ok(())
     }
 
@@ -318,6 +343,12 @@ impl Blockchain {
             self.db.put(KEY_DIFF, &self.difficulty.to_le_bytes()).expect("rocksdb put diff");
         }
 
+        // ABC: adjust target block time during IBD too
+        if self.height > highest_cp && self.height > 0 && self.height % ABC_WINDOW == 0 {
+            self.target_block_ms = self.compute_adaptive_cadence();
+            self.db.put(KEY_TARGET, &self.target_block_ms.to_le_bytes()).expect("rocksdb put target");
+        }
+
         Ok(())
     }
 
@@ -352,8 +383,12 @@ impl Blockchain {
                 let d_arr: [u8; 4] = (&d_bytes[..]).try_into().unwrap_or([0u8; 4]);
                 u32::from_le_bytes(d_arr)
             } else { difficulty };
-            eprintln!("[CHAIN] Loaded from RocksDB — height: {}, diff: {} bits", height, diff);
-            return Self { db, height, difficulty: diff };
+            let target = if let Ok(Some(t_bytes)) = db.get(KEY_TARGET) {
+                let t_arr: [u8; 8] = (&t_bytes[..]).try_into().unwrap_or(BASE_TARGET_BLOCK_MS.to_le_bytes());
+                u64::from_le_bytes(t_arr)
+            } else { BASE_TARGET_BLOCK_MS };
+            eprintln!("[CHAIN] Loaded from RocksDB — height: {}, diff: {} bits, target: {}ms", height, diff, target);
+            return Self { db, height, difficulty: diff, target_block_ms: target };
         }
 
         // ── Case 2: migrate from legacy chain.json ───────────────────────────
@@ -377,7 +412,7 @@ impl Blockchain {
                     db.put(KEY_HEIGHT, &height.to_le_bytes()).expect("rocksdb put height");
                     db.put(KEY_DIFF, &legacy.difficulty.to_le_bytes()).expect("rocksdb put diff");
                     eprintln!("[CHAIN] Migration complete — height: {}", height);
-                    return Self { db, height, difficulty: legacy.difficulty };
+                    return Self { db, height, difficulty: legacy.difficulty, target_block_ms: BASE_TARGET_BLOCK_MS };
                 }
             }
         }
@@ -388,8 +423,9 @@ impl Blockchain {
         db.put(block_key(0), &enc).expect("rocksdb put genesis");
         db.put(KEY_HEIGHT, &0u64.to_le_bytes()).expect("rocksdb put height");
         db.put(KEY_DIFF, &difficulty.to_le_bytes()).expect("rocksdb put diff");
+        db.put(KEY_TARGET, &BASE_TARGET_BLOCK_MS.to_le_bytes()).expect("rocksdb put target");
         eprintln!("[CHAIN] Fresh chain — genesis written to RocksDB");
-        Self { db, height: 0, difficulty }
+        Self { db, height: 0, difficulty, target_block_ms: BASE_TARGET_BLOCK_MS }
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────
@@ -402,7 +438,7 @@ impl Blockchain {
         let window_start = self.block_at(self.height - DAA_WINDOW).unwrap();
 
         let actual_ms = window_end.timestamp.saturating_sub(window_start.timestamp);
-        let target_ms = TARGET_BLOCK_MS * DAA_WINDOW;
+        let target_ms = self.target_block_ms * DAA_WINDOW;
 
         if actual_ms == 0 {
             return (self.difficulty + 1).min(30);
@@ -423,15 +459,53 @@ impl Blockchain {
         new_diff.max(1).min(30)
     }
 
+    /// Adaptive Block Cadence: adjust target_block_ms based on fork indicators.
+    /// Counts "fast blocks" (inter-block time < 5s) over the last ABC_WINDOW blocks.
+    /// High fork rate → slow down (increase target). Low fork rate → speed up.
+    fn compute_adaptive_cadence(&self) -> u64 {
+        if self.height < ABC_WINDOW {
+            return self.target_block_ms;
+        }
+        let mut fast_blocks = 0u64;
+        let start = self.height - ABC_WINDOW + 1;
+        for i in start..=self.height {
+            if let (Some(curr), Some(prev)) = (self.block_at(i), self.block_at(i - 1)) {
+                let dt = curr.timestamp.saturating_sub(prev.timestamp);
+                if dt < FAST_BLOCK_THRESHOLD_MS {
+                    fast_blocks += 1;
+                }
+            }
+        }
+        let fork_rate = fast_blocks as f64 / ABC_WINDOW as f64;
+        let new_target = if fork_rate > ABC_SLOW_DOWN_THRESHOLD {
+            // Too many fast blocks → forks likely → slow down
+            self.target_block_ms.saturating_add(ABC_STEP_MS)
+        } else if fork_rate < ABC_SPEED_UP_THRESHOLD {
+            // Very few fast blocks → network stable → speed up
+            self.target_block_ms.saturating_sub(ABC_STEP_MS)
+        } else {
+            self.target_block_ms
+        };
+        let clamped = new_target.max(MIN_TARGET_BLOCK_MS).min(MAX_TARGET_BLOCK_MS);
+        if clamped != self.target_block_ms {
+            eprintln!(
+                "[ABC] Block cadence adjusted: {}ms → {}ms (fork_rate: {:.1}%, fast_blocks: {}/{})",
+                self.target_block_ms, clamped, fork_rate * 100.0, fast_blocks, ABC_WINDOW
+            );
+        }
+        clamped
+    }
+
     /// Replay the DAA from genesis using actual block timestamps.
     /// This gives the exact same difficulty that the original chain computed.
     pub fn recalibrate_difficulty_after_ibd(&mut self) {
         let mut diff = crate::TESTNET_DIFFICULTY;
+        let mut target = BASE_TARGET_BLOCK_MS;
         let mut h = DAA_WINDOW;
         while h <= self.height {
             if let (Some(end_b), Some(start_b)) = (self.block_at(h), self.block_at(h - DAA_WINDOW)) {
                 let actual_ms = end_b.timestamp.saturating_sub(start_b.timestamp);
-                let target_ms = TARGET_BLOCK_MS * DAA_WINDOW;
+                let target_ms = target * DAA_WINDOW;
                 diff = if actual_ms == 0 {
                     (diff + 1).min(30)
                 } else if actual_ms < target_ms / 4 {
@@ -447,11 +521,34 @@ impl Blockchain {
                 };
                 diff = diff.max(1).min(30);
             }
+            // Replay ABC at ABC_WINDOW boundaries
+            if h % ABC_WINDOW == 0 && h >= ABC_WINDOW {
+                let mut fast = 0u64;
+                let start_i = h - ABC_WINDOW + 1;
+                for i in start_i..=h {
+                    if let (Some(c), Some(p)) = (self.block_at(i), self.block_at(i - 1)) {
+                        if c.timestamp.saturating_sub(p.timestamp) < FAST_BLOCK_THRESHOLD_MS {
+                            fast += 1;
+                        }
+                    }
+                }
+                let rate = fast as f64 / ABC_WINDOW as f64;
+                target = if rate > ABC_SLOW_DOWN_THRESHOLD {
+                    target.saturating_add(ABC_STEP_MS)
+                } else if rate < ABC_SPEED_UP_THRESHOLD {
+                    target.saturating_sub(ABC_STEP_MS)
+                } else {
+                    target
+                };
+                target = target.max(MIN_TARGET_BLOCK_MS).min(MAX_TARGET_BLOCK_MS);
+            }
             h += DAA_WINDOW;
         }
         self.difficulty = diff;
+        self.target_block_ms = target;
         self.db.put(KEY_DIFF, &self.difficulty.to_le_bytes()).expect("rocksdb put diff");
-        eprintln!("[DAA] Recalibrated difficulty to {} after IBD (replayed from genesis)", self.difficulty);
+        self.db.put(KEY_TARGET, &self.target_block_ms.to_le_bytes()).expect("rocksdb put target");
+        eprintln!("[DAA] Recalibrated after IBD — difficulty: {}, target: {}ms", self.difficulty, self.target_block_ms);
     }
 }
 
