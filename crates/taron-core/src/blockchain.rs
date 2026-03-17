@@ -441,7 +441,7 @@ impl Blockchain {
         let target_ms = self.target_block_ms * DAA_WINDOW;
 
         if actual_ms == 0 {
-            return (self.difficulty + 1).min(30);
+            return (self.difficulty + 1).min(24);
         }
 
         let new_diff = if actual_ms < target_ms / 4 {
@@ -456,7 +456,7 @@ impl Blockchain {
             self.difficulty
         };
 
-        new_diff.max(1).min(30)
+        new_diff.max(1).min(24)
     }
 
     /// Adaptive Block Cadence: adjust target_block_ms based on fork indicators.
