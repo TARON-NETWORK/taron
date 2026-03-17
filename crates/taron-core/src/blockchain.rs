@@ -37,6 +37,10 @@ const ABC_STEP_MS: u64 = 5_000; // 5 seconds
 const ABC_SLOW_DOWN_THRESHOLD: f64 = 0.20;
 /// Fork rate threshold below which we speed up (5% fast blocks).
 const ABC_SPEED_UP_THRESHOLD: f64 = 0.05;
+/// Minimum target (hardest difficulty, ~24 leading zero bits).
+const MIN_TARGET: u64 = 1u64 << (64 - 24); // 1u64 << 40
+/// Maximum target (easiest difficulty, ~8 leading zero bits).
+const MAX_TARGET: u64 = 1u64 << (64 - 8);  // 1u64 << 56
 
 /// Known-good block hashes. Any block at these heights must match exactly.
 /// A peer sending a different hash at a checkpoint height is on a fork — reject immediately.
@@ -89,8 +93,10 @@ pub struct Blockchain {
     db: DB,
     /// Cached tip height (index of the last block). Source of truth is in DB.
     pub height: u64,
-    /// Proof-of-work difficulty (leading-zero bits required).
-    pub difficulty: u32,
+    /// Mining difficulty as a u64 target. A hash is valid if its first 8 bytes
+    /// (big-endian u64) are less than this target. Higher = easier, lower = harder.
+    /// Adjusted by ratio every DAA_WINDOW blocks for smooth difficulty changes.
+    pub difficulty: u64,
     /// Adaptive Block Cadence: current target block time in milliseconds.
     /// Adjusted every ABC_WINDOW blocks based on fork indicators.
     pub target_block_ms: u64,
@@ -214,7 +220,7 @@ impl Blockchain {
         // TESTNET_DIFFICULTY and persist it — DB may still hold the old
         // DAA-adjusted value from the previous chain.
         if self.height == 0 {
-            self.difficulty = crate::TESTNET_DIFFICULTY;
+            self.difficulty = crate::TESTNET_TARGET;
             let _ = self.db.put(KEY_DIFF, &self.difficulty.to_le_bytes());
         }
         Ok(reverted)
@@ -307,8 +313,8 @@ impl Blockchain {
                 eprintln!("[REJECT] block #{}: checkpoint mismatch", block.index);
                 return Err(TaronError::InvalidBlock);
             }
-            // Restore the canonical difficulty at this checkpoint
-            self.difficulty = cp_diff;
+            // Restore the canonical difficulty at this checkpoint (convert bits → target)
+            self.difficulty = crate::hash::bits_to_target(cp_diff);
             self.db.put(KEY_DIFF, &self.difficulty.to_le_bytes()).expect("rocksdb put diff");
         }
 
@@ -363,7 +369,7 @@ impl Blockchain {
     /// - If a `chain.json` file exists next to `path` (legacy format), migrate
     ///   it to RocksDB automatically.
     /// - Otherwise, start fresh with the genesis block.
-    pub fn load_or_create(path: &Path, difficulty: u32) -> Self {
+    pub fn load_or_create(path: &Path, _difficulty: u32) -> Self {
         let mut opts = Options::default();
         opts.create_if_missing(true);
 
@@ -373,66 +379,45 @@ impl Blockchain {
         if let Ok(Some(h_bytes)) = db.get(KEY_HEIGHT) {
             let h_arr: [u8; 8] = (&h_bytes[..]).try_into().unwrap_or([0u8; 8]);
             let height = u64::from_le_bytes(h_arr);
-            // If chain is at genesis (height 0), always reset difficulty to
-            // TESTNET_DIFFICULTY — the DB may still hold a stale high value
-            // from the previous chain (e.g. after a revert-to-genesis).
             let diff = if height == 0 {
-                let _ = db.put(KEY_DIFF, &crate::TESTNET_DIFFICULTY.to_le_bytes());
-                crate::TESTNET_DIFFICULTY
+                let _ = db.put(KEY_DIFF, &crate::TESTNET_TARGET.to_le_bytes());
+                crate::TESTNET_TARGET
             } else if let Ok(Some(d_bytes)) = db.get(KEY_DIFF) {
-                let d_arr: [u8; 4] = (&d_bytes[..]).try_into().unwrap_or([0u8; 4]);
-                u32::from_le_bytes(d_arr)
-            } else { difficulty };
-            let target = if let Ok(Some(t_bytes)) = db.get(KEY_TARGET) {
+                if d_bytes.len() == 8 {
+                    u64::from_le_bytes((&d_bytes[..]).try_into().unwrap())
+                } else {
+                    // Legacy u32 bits → convert to target
+                    let bits = u32::from_le_bytes((&d_bytes[..4]).try_into().unwrap_or([0; 4]));
+                    crate::hash::bits_to_target(bits)
+                }
+            } else { crate::TESTNET_TARGET };
+            let target_block = if let Ok(Some(t_bytes)) = db.get(KEY_TARGET) {
                 let t_arr: [u8; 8] = (&t_bytes[..]).try_into().unwrap_or(BASE_TARGET_BLOCK_MS.to_le_bytes());
                 u64::from_le_bytes(t_arr)
             } else { BASE_TARGET_BLOCK_MS };
-            eprintln!("[CHAIN] Loaded from RocksDB — height: {}, diff: {} bits, target: {}ms", height, diff, target);
-            return Self { db, height, difficulty: diff, target_block_ms: target };
+            let bits = crate::hash::target_to_bits(diff);
+            eprintln!("[CHAIN] Loaded from RocksDB — height: {}, target: {} (~{} bits), block_time: {}ms", height, diff, bits, target_block);
+            return Self { db, height, difficulty: diff, target_block_ms: target_block };
         }
 
-        // ── Case 2: migrate from legacy chain.json ───────────────────────────
-        // Derive json path: "~/.taron-testnet/chain.db" → "~/.taron-testnet/chain.json"
-        let json_path = path.with_extension("json");
-        if json_path.exists() {
-            if let Ok(data) = std::fs::read_to_string(&json_path) {
-                #[derive(serde::Deserialize)]
-                struct LegacyChain { blocks: Vec<Block>, difficulty: u32 }
-
-                if let Ok(legacy) = serde_json::from_str::<LegacyChain>(&data) {
-                    eprintln!(
-                        "[CHAIN] Migrating chain.json ({} blocks) → RocksDB…",
-                        legacy.blocks.len()
-                    );
-                    let height = legacy.blocks.last().map(|b| b.index).unwrap_or(0);
-                    for block in &legacy.blocks {
-                        let enc = bincode::serialize(block).expect("encode");
-                        db.put(block_key(block.index), &enc).expect("rocksdb put");
-                    }
-                    db.put(KEY_HEIGHT, &height.to_le_bytes()).expect("rocksdb put height");
-                    db.put(KEY_DIFF, &legacy.difficulty.to_le_bytes()).expect("rocksdb put diff");
-                    eprintln!("[CHAIN] Migration complete — height: {}", height);
-                    return Self { db, height, difficulty: legacy.difficulty, target_block_ms: BASE_TARGET_BLOCK_MS };
-                }
-            }
-        }
-
-        // ── Case 3: fresh genesis ────────────────────────────────────────────
+        // ── Case 2: fresh genesis ────────────────────────────────────────────
         let genesis = Block::genesis();
         let enc = bincode::serialize(&genesis).expect("encode genesis");
         db.put(block_key(0), &enc).expect("rocksdb put genesis");
         db.put(KEY_HEIGHT, &0u64.to_le_bytes()).expect("rocksdb put height");
-        db.put(KEY_DIFF, &difficulty.to_le_bytes()).expect("rocksdb put diff");
+        db.put(KEY_DIFF, &crate::TESTNET_TARGET.to_le_bytes()).expect("rocksdb put diff");
         db.put(KEY_TARGET, &BASE_TARGET_BLOCK_MS.to_le_bytes()).expect("rocksdb put target");
         eprintln!("[CHAIN] Fresh chain — genesis written to RocksDB");
-        Self { db, height: 0, difficulty, target_block_ms: BASE_TARGET_BLOCK_MS }
+        Self { db, height: 0, difficulty: crate::TESTNET_TARGET, target_block_ms: BASE_TARGET_BLOCK_MS }
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────
 
-    fn compute_next_difficulty(&self) -> u32 {
+    /// Ratio-based DAA: adjusts the u64 target proportionally to actual vs expected time.
+    /// Clamps adjustment to ±4x per window to prevent wild swings.
+    fn compute_next_difficulty(&self) -> u64 {
         if self.height < DAA_WINDOW {
-            return crate::TESTNET_DIFFICULTY;
+            return crate::TESTNET_TARGET;
         }
         let window_end   = self.block_at(self.height).unwrap();
         let window_start = self.block_at(self.height - DAA_WINDOW).unwrap();
@@ -441,22 +426,23 @@ impl Blockchain {
         let target_ms = self.target_block_ms * DAA_WINDOW;
 
         if actual_ms == 0 {
-            return (self.difficulty + 1).min(24);
+            // Blocks instant → make it 4x harder (divide target by 4)
+            return (self.difficulty / 4).max(MIN_TARGET);
         }
 
-        let new_diff = if actual_ms < target_ms / 4 {
-            self.difficulty.saturating_add(2)
-        } else if actual_ms < target_ms {
-            self.difficulty.saturating_add(1)
-        } else if actual_ms > target_ms * 4 {
-            self.difficulty.saturating_sub(2)
-        } else if actual_ms > target_ms {
-            self.difficulty.saturating_sub(1)
-        } else {
-            self.difficulty
-        };
+        // new_target = old_target * actual_time / expected_time
+        // Blocks too fast → actual < target → ratio < 1 → target decreases (harder)
+        // Blocks too slow → actual > target → ratio > 1 → target increases (easier)
+        let new_target = (self.difficulty as u128 * actual_ms as u128 / target_ms as u128) as u64;
 
-        new_diff.max(1).min(24)
+        // Clamp: max 4x change per window, and stay within [MIN_TARGET, MAX_TARGET]
+        let clamped = new_target
+            .max(self.difficulty / 4)    // no more than 4x harder
+            .min(self.difficulty * 4)    // no more than 4x easier
+            .max(MIN_TARGET)             // hardest allowed (~24 bits)
+            .min(MAX_TARGET);            // easiest allowed (~8 bits)
+
+        clamped
     }
 
     /// Adaptive Block Cadence: adjust target_block_ms based on fork indicators.
@@ -505,7 +491,7 @@ impl Blockchain {
         if self.height >= DAA_WINDOW {
             self.difficulty = self.compute_next_difficulty();
         } else {
-            self.difficulty = crate::TESTNET_DIFFICULTY;
+            self.difficulty = crate::TESTNET_TARGET;
         }
 
         // Compute ABC target from the last ABC_WINDOW blocks

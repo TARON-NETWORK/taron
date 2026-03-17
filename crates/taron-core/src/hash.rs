@@ -248,6 +248,29 @@ impl Sequal256 {
 
         true
     }
+
+    /// Check if a hash is below a u64 target (fine-grained difficulty).
+    /// Compares the first 8 bytes of the hash (big-endian) against the target.
+    /// Lower target = harder. Higher target = easier.
+    pub fn meets_target(hash: &[u8; 32], target: u64) -> bool {
+        let hash_val = u64::from_be_bytes([
+            hash[0], hash[1], hash[2], hash[3],
+            hash[4], hash[5], hash[6], hash[7],
+        ]);
+        hash_val < target
+    }
+}
+
+/// Convert a leading-zero-bits difficulty to a u64 target.
+pub fn bits_to_target(bits: u32) -> u64 {
+    if bits >= 64 { return 0; }
+    1u64 << (64 - bits)
+}
+
+/// Convert a u64 target to approximate leading-zero-bits (for display).
+pub fn target_to_bits(target: u64) -> u32 {
+    if target == 0 { return 64; }
+    (64 - (64 - target.leading_zeros())) as u32
 }
 
 /// Convenience wrapper for SHA3-256.
@@ -261,6 +284,11 @@ pub fn sha3_256(data: &[u8]) -> [u8; 32] {
 /// This is a standalone function wrapper around Sequal256::meets_difficulty.
 pub fn meets_difficulty(hash: &[u8; 32], difficulty_bits: u32) -> bool {
     Sequal256::meets_difficulty(hash, difficulty_bits)
+}
+
+/// Standalone wrapper for target-based difficulty check.
+pub fn meets_target(hash: &[u8; 32], target: u64) -> bool {
+    Sequal256::meets_target(hash, target)
 }
 
 #[cfg(test)]

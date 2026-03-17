@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use taron_core::{Wallet, TxBuilder, Ledger, Transaction, meets_difficulty, TESTNET_DIFFICULTY, TESTNET_REWARD, Block, Blockchain};
+use taron_core::{Wallet, TxBuilder, Ledger, Transaction, meets_difficulty, meets_target, TESTNET_DIFFICULTY, TESTNET_TARGET, TESTNET_REWARD, Block, Blockchain, target_to_bits};
 use taron_node::TaronNode;
 use taron_node::node::NodeConfig;
 use taron_node::state_file::NodeStateFile;
@@ -595,10 +595,10 @@ async fn main() -> anyhow::Result<()> {
 
                     let (block_tx, block_rx) = tokio::sync::mpsc::channel::<Block>(64);
 
-                    let initial_difficulty = TESTNET_DIFFICULTY;
+                    let initial_difficulty = TESTNET_TARGET;
                     println!(" [MINER] Starting {} mining threads...", threads);
                     println!(" [MINER] Address: {}", wallet.address());
-                    println!(" [MINER] Difficulty: {} bits", initial_difficulty);
+                    println!(" [MINER] Difficulty: ~{} bits (target: {})", target_to_bits(initial_difficulty), initial_difficulty);
                     println!(" [MINER] Waiting for initial sync before mining...\n");
 
                     let sync_ready = node.sync_ready.clone();
@@ -641,7 +641,7 @@ async fn main() -> anyhow::Result<()> {
                             // This avoids rt.block_on() + RwLock per hash which kills performance.
                             let mut cached_index = 0u64;
                             let mut cached_prev_hash = [0u8; 32];
-                            let mut cached_difficulty = 0u32;
+                            let mut cached_difficulty = 0u64;
                             let mut cached_txs: Vec<Transaction> = Vec::new();
                             let mut last_template_refresh = std::time::Instant::now();
                             let template_refresh_interval = std::time::Duration::from_secs(2);
@@ -681,7 +681,7 @@ async fn main() -> anyhow::Result<()> {
                                 let hash = candidate.hash_header();
                                 total_hashes.fetch_add(1, Ordering::Relaxed);
 
-                                if meets_difficulty(&hash, cached_difficulty) {
+                                if meets_target(&hash, cached_difficulty) {
                                     candidate.hash = hash;
                                     let sol_num = solutions.fetch_add(1, Ordering::Relaxed) + 1;
 
@@ -953,7 +953,7 @@ async fn main() -> anyhow::Result<()> {
             println!(" Node Status");
             println!(" ─────────────────────────────────────────────────");
             println!(" Network    : {}", if testnet { "testnet" } else { "mainnet" });
-            println!(" Difficulty : {} bits", TESTNET_DIFFICULTY);
+            println!(" Difficulty : ~{} bits (target-based)", TESTNET_DIFFICULTY);
 
             let data_dir = get_data_dir(testnet);
 

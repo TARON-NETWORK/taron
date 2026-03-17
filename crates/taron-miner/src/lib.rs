@@ -155,7 +155,7 @@ pub use bench::{
 };
 
 // Re-export important constants from taron-core
-pub use taron_core::hash::{Sequal256, MINING_STEPS, meets_difficulty};
+pub use taron_core::hash::{Sequal256, MINING_STEPS, meets_difficulty, meets_target};
 
 /// CoolMine version information
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -470,7 +470,7 @@ mod tests {
         assert!(low_power.burst_config.duty_cycle() < performance.burst_config.duty_cycle());
         
         // Benchmark should be reproducible
-        assert_eq!(benchmark.difficulty, 0);
+        assert_eq!(benchmark.difficulty, u64::MAX);
         assert_eq!(benchmark.worker_threads, 1);
     }
 

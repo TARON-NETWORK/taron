@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 /// Adjusts automatically via DAA every 10 blocks.
 pub const TESTNET_DIFFICULTY: u32 = 14;
 
+/// Testnet initial target (u64). Equivalent to 14 leading zero bits.
+/// Higher = easier. DAA adjusts by ratio for smooth difficulty changes.
+pub const TESTNET_TARGET: u64 = 1u64 << (64 - 14); // = 1u64 << 50
+
 /// Testnet mining reward per solution (15.85 TAR in µTAR)
 pub const TESTNET_REWARD: u64 = 15_850_000;
 

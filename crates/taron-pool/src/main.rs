@@ -41,7 +41,7 @@ use tracing::{info, warn};
 
 use taron_core::{
     Block, TxBuilder, Wallet, WalletFile,
-    meets_difficulty,
+    meets_difficulty, meets_target,
     wallet::address_from_pubkey,
     TESTNET_REWARD,
 };

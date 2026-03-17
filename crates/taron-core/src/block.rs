@@ -14,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use crate::hash::{Sequal256, MINING_STEPS, sha3_256};
-use crate::meets_difficulty;
+use crate::meets_target;
 use crate::Transaction;
 
 /// Maximum timestamp drift allowed for a block (±2 minutes).
@@ -88,22 +88,22 @@ impl Block {
     /// 3. `self.hash == self.hash_header()`  (hash integrity)
     /// 4. `self.hash` meets `difficulty` leading zero bits
     /// 5. `self.timestamp` is within ±2 minutes of node clock (CVE-002)
-    pub fn is_valid(&self, prev_block: &Block, difficulty: u32) -> bool {
+    pub fn is_valid(&self, prev_block: &Block, difficulty: u64) -> bool {
         self.is_valid_inner(prev_block, difficulty, true)
     }
 
     /// Same as `is_valid` but skips the timestamp drift check.
     /// Use during IBD (Initial Block Download) — historical blocks are always old.
-    pub fn is_valid_ibd(&self, prev_block: &Block, difficulty: u32) -> bool {
+    pub fn is_valid_ibd(&self, prev_block: &Block, difficulty: u64) -> bool {
         self.is_valid_inner(prev_block, difficulty, false)
     }
 
-    fn is_valid_inner(&self, prev_block: &Block, difficulty: u32, check_timestamp: bool) -> bool {
+    fn is_valid_inner(&self, prev_block: &Block, difficulty: u64, check_timestamp: bool) -> bool {
         self.validate_inner(prev_block, difficulty, check_timestamp).is_none()
     }
 
     /// Returns `None` if valid, or `Some(reason)` if invalid.
-    pub fn validate_inner(&self, prev_block: &Block, difficulty: u32, check_timestamp: bool) -> Option<String> {
+    pub fn validate_inner(&self, prev_block: &Block, difficulty: u64, check_timestamp: bool) -> Option<String> {
         if self.index != prev_block.index + 1 {
             return Some(format!("bad index: got {} expected {}", self.index, prev_block.index + 1));
         }
@@ -114,8 +114,8 @@ impl Block {
         if self.hash != computed {
             return Some(format!("bad hash: stored {} computed {}", hex::encode(&self.hash[..8]), hex::encode(&computed[..8])));
         }
-        if !meets_difficulty(&self.hash, difficulty) {
-            return Some(format!("insufficient difficulty: hash {} required {}", hex::encode(&self.hash[..8]), difficulty));
+        if !meets_target(&self.hash, difficulty) {
+            return Some(format!("insufficient difficulty: hash {} target {}", hex::encode(&self.hash[..8]), difficulty));
         }
         if check_timestamp {
             let now_ms = SystemTime::now()

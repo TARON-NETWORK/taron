@@ -18,11 +18,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
-use taron_core::hash::{Sequal256, MINING_STEPS, meets_difficulty};
+use taron_core::hash::{Sequal256, MINING_STEPS, meets_target};
 use tracing::{debug, info, error, trace};
 
-/// Default difficulty for mining (number of leading zero bits)
-const DEFAULT_DIFFICULTY: u32 = 16;
+/// Default difficulty target for mining
+const DEFAULT_DIFFICULTY: u64 = 1u64 << (64 - 16);
 
 /// Statistics update interval (1 second)
 const STATS_UPDATE_INTERVAL: Duration = Duration::from_secs(1);
@@ -30,8 +30,8 @@ const STATS_UPDATE_INTERVAL: Duration = Duration::from_secs(1);
 /// Mining engine configuration
 #[derive(Debug, Clone)]
 pub struct MiningConfig {
-    /// Mining difficulty (leading zero bits)
-    pub difficulty: u32,
+    /// Mining difficulty target (u64, lower = harder)
+    pub difficulty: u64,
     /// Number of SEQUAL-256 steps per hash
     pub steps: u32,
     /// Enable thermal management
@@ -85,7 +85,7 @@ impl MiningConfig {
     /// Create configuration for benchmarking
     pub fn benchmark() -> Self {
         Self {
-            difficulty: 0, // No difficulty requirement for benchmarking
+            difficulty: u64::MAX, // No difficulty requirement for benchmarking
             steps: MINING_STEPS,
             thermal_enabled: true,
             burst_config: BurstConfig::balanced(),
@@ -140,7 +140,7 @@ impl MiningStats {
 pub struct MiningResult {
     pub hash: [u8; 32],
     pub nonce: u64,
-    pub difficulty: u32,
+    pub difficulty: u64,
     pub steps: u32,
     pub timestamp: Instant,
 }
@@ -393,7 +393,7 @@ impl MiningEngine {
         self.stats.write().total_hashes += 1;
 
         // Check if hash meets difficulty
-        if meets_difficulty(&hash, config.difficulty) {
+        if meets_target(&hash, config.difficulty) {
             let result = MiningResult {
                 hash,
                 nonce,

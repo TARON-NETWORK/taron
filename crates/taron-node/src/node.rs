@@ -101,6 +101,7 @@ pub struct NodeStatus {
     pub total_supply: u64,
     pub chain_height: u64,
     pub difficulty: u32,
+    pub difficulty_target: u64,
     /// Hex-encoded hash of the chain tip block.
     pub best_hash: String,
 }
@@ -174,7 +175,7 @@ impl TaronNode {
 
         let data_dir = config.data_dir.clone();
         let initial_height = blockchain.height();
-        let initial_diff = blockchain.difficulty as u64;
+        let initial_diff = blockchain.difficulty;
         let initial_hash = hex::encode(blockchain.tip().hash);
         let initial_accounts = ledger.account_count() as u64;
         let initial_supply = ledger.total_supply();
@@ -212,7 +213,7 @@ impl TaronNode {
 
         let blockchain = Blockchain::load_or_create(&chain_path, TESTNET_DIFFICULTY);
         let initial_height = blockchain.height();
-        let initial_diff = blockchain.difficulty as u64;
+        let initial_diff = blockchain.difficulty;
         let initial_hash = hex::encode(blockchain.tip().hash);
         let initial_accounts = ledger.account_count() as u64;
         let initial_supply = ledger.total_supply();
@@ -266,7 +267,8 @@ impl TaronNode {
         let total_supply = self.cached_total_supply.load(Ordering::Relaxed);
         // Use cached atomics for blockchain data — never blocks
         let chain_height = self.chain_height.load(Ordering::Relaxed);
-        let difficulty = self.cached_difficulty.load(Ordering::Relaxed) as u32;
+        let difficulty_target = self.cached_difficulty.load(Ordering::Relaxed);
+        let difficulty = taron_core::target_to_bits(difficulty_target) as u32;
         let best_hash = self.cached_best_hash.read().await.clone();
         NodeStatus {
             listen_port: self.config.listen_port,
@@ -278,6 +280,7 @@ impl TaronNode {
             total_supply,
             chain_height,
             difficulty,
+            difficulty_target,
             best_hash,
         }
     }
@@ -552,7 +555,7 @@ impl TaronNode {
         match chain.apply_block(&block, &mut ledger) {
             Ok(()) => {
                 self.chain_height.store(block.index, Ordering::Release);
-                self.cached_difficulty.store(chain.difficulty as u64, Ordering::Release);
+                self.cached_difficulty.store(chain.difficulty, Ordering::Release);
                 self.cached_account_count.store(ledger.account_count() as u64, Ordering::Release);
                 self.cached_total_supply.store(ledger.total_supply(), Ordering::Release);
                 let hash = hex::encode(&block.hash);
@@ -1079,7 +1082,7 @@ async fn handle_messages(
                         chain_height_atomic.store(block_index, Ordering::Release);
                         {
                             let chain = blockchain.read().await;
-                            cached_difficulty.store(chain.difficulty as u64, Ordering::Release);
+                            cached_difficulty.store(chain.difficulty, Ordering::Release);
                         }
                         *cached_best_hash.write().await = hex::encode(&block.hash);
                         {
@@ -1199,7 +1202,7 @@ async fn handle_messages(
                                             // Apply the better competing block
                                             if chain.apply_block(&block, &mut *ledger_state).is_ok() {
                                                 chain_height_atomic.store(block_index, Ordering::Release);
-                                                cached_difficulty.store(chain.difficulty as u64, Ordering::Release);
+                                                cached_difficulty.store(chain.difficulty, Ordering::Release);
                                                 cached_account_count.store(ledger_state.account_count() as u64, Ordering::Release);
                                                 cached_total_supply.store(ledger_state.total_supply(), Ordering::Release);
                                                 info!(
@@ -1350,7 +1353,7 @@ async fn handle_messages(
                             if r.is_ok() {
                                 cached_account_count.store(ledger_state.account_count() as u64, Ordering::Release);
                                 cached_total_supply.store(ledger_state.total_supply(), Ordering::Release);
-                                cached_difficulty.store(chain.difficulty as u64, Ordering::Release);
+                                cached_difficulty.store(chain.difficulty, Ordering::Release);
                             }
                             r
                         };
@@ -1397,7 +1400,7 @@ async fn handle_messages(
                                                             applied += 1;
                                                             last_height = new_block.index;
                                                             chain_height_atomic.store(new_block.index, Ordering::Release);
-                                                            cached_difficulty.store(chain.difficulty as u64, Ordering::Release);
+                                                            cached_difficulty.store(chain.difficulty, Ordering::Release);
                                                             cached_account_count.store(ledger_state.account_count() as u64, Ordering::Release);
                                                             cached_total_supply.store(ledger_state.total_supply(), Ordering::Release);
                                                             info!("[REORG] Applied block #{}", new_block.index);
@@ -1435,9 +1438,9 @@ async fn handle_messages(
                                         match chain.revert_to_height(0, &mut *ledger_state) {
                                             Ok(reverted) => {
                                                 // Reset difficulty to initial after full revert to genesis
-                                                chain.difficulty = TESTNET_DIFFICULTY;
+                                                chain.difficulty = taron_core::TESTNET_TARGET;
                                                 chain_height_atomic.store(0, Ordering::Release);
-                                                cached_difficulty.store(chain.difficulty as u64, Ordering::Release);
+                                                cached_difficulty.store(chain.difficulty, Ordering::Release);
                                                 cached_account_count.store(ledger_state.account_count() as u64, Ordering::Release);
                                                 cached_total_supply.store(ledger_state.total_supply(), Ordering::Release);
                                                 *cached_best_hash.write().await = hex::encode(&chain.tip().hash);
@@ -1495,7 +1498,7 @@ async fn handle_messages(
                                 {
                                     let mut ch = blockchain.write().await;
                                     ch.recalibrate_difficulty_after_ibd();
-                                    cached_difficulty.store(ch.difficulty as u64, Ordering::Release);
+                                    cached_difficulty.store(ch.difficulty, Ordering::Release);
                                 }
                                 // Release IBD slot so other peers can trigger future syncs
                                 *ibd_peer.lock().await = None;
