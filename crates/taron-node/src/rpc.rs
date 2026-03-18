@@ -579,6 +579,11 @@ async fn submit_tx(
     match mempool.insert(tx.clone()) {
         Ok(true) => {
             drop(mempool);
+            // Apply to ledger immediately for instant balance update
+            {
+                let mut ledger = node.ledger.write().await;
+                let _ = ledger.apply_tx(&tx);
+            }
             node.broadcast_tx(&tx).await;
             info!("Accepted tx {} into mempool", &hash[..16]);
             (StatusCode::OK, Json(SubmitTxResponse {
