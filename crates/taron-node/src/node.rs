@@ -131,9 +131,10 @@ pub struct TaronNode {
     /// Prevents 17 peers from all queuing for the write lock simultaneously,
     /// which starves RPC read operations.
     pub block_semaphore: Arc<Semaphore>,
-    /// The peer currently driving IBD. None when synced.
-    /// Only this peer can trigger reorgs or apply batched blocks.
-    pub ibd_peer: Arc<Mutex<Option<SocketAddr>>>,
+    /// The peer currently driving IBD, with timestamp of last activity.
+    /// None when synced. Only this peer can trigger reorgs or apply batched blocks.
+    /// If no blocks received for 30s, the slot is automatically released.
+    pub ibd_peer: Arc<Mutex<Option<(SocketAddr, Instant)>>>,
     /// Current chain height — updated atomically after each block, used for
     /// lock-free quick-reject of stale block submissions.
     pub chain_height: Arc<AtomicU64>,
@@ -365,6 +366,18 @@ impl TaronNode {
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+
+                    // Release stale IBD slot (peer disconnected without finishing)
+                    {
+                        let mut slot = ibd_peer_rc.lock().await;
+                        if let Some((ibd_addr, last_activity)) = *slot {
+                            if last_activity.elapsed() > std::time::Duration::from_secs(30) {
+                                info!("[SYNC] IBD peer {} timed out (30s no activity) — releasing slot", ibd_addr);
+                                *slot = None;
+                            }
+                        }
+                    }
+
                     let (outbound, can_accept) = {
                         let pm = peers.lock().await;
                         (pm.outbound_count(), pm.can_accept(PeerDirection::Outbound))
@@ -643,7 +656,7 @@ async fn connect_to_peer(
     discovered_peers: Arc<RwLock<HashSet<SocketAddr>>>,
     sync_ready: Arc<AtomicBool>,
     block_semaphore: Arc<Semaphore>,
-    ibd_peer: Arc<Mutex<Option<SocketAddr>>>,
+    ibd_peer: Arc<Mutex<Option<(SocketAddr, Instant)>>>,
     chain_height: Arc<AtomicU64>,
     cached_account_count: Arc<AtomicU64>,
     cached_total_supply: Arc<AtomicU64>,
@@ -723,7 +736,7 @@ async fn connect_to_peer(
     // Release IBD slot if this peer was driving IBD
     {
         let mut slot = ibd_peer.lock().await;
-        if *slot == Some(addr) {
+        if slot.map(|(a,_)| a) == Some(addr) {
             *slot = None;
         }
     }
@@ -750,7 +763,7 @@ async fn handle_peer(
     discovered_peers: Arc<RwLock<HashSet<SocketAddr>>>,
     sync_ready: Arc<AtomicBool>,
     block_semaphore: Arc<Semaphore>,
-    ibd_peer: Arc<Mutex<Option<SocketAddr>>>,
+    ibd_peer: Arc<Mutex<Option<(SocketAddr, Instant)>>>,
     chain_height: Arc<AtomicU64>,
     cached_account_count: Arc<AtomicU64>,
     cached_total_supply: Arc<AtomicU64>,
@@ -795,7 +808,7 @@ async fn handle_peer(
     // Release IBD slot if this peer was driving IBD
     {
         let mut slot = ibd_peer.lock().await;
-        if *slot == Some(addr) {
+        if slot.map(|(a,_)| a) == Some(addr) {
             *slot = None;
         }
     }
@@ -832,7 +845,7 @@ async fn handle_messages(
     discovered_peers: Arc<RwLock<HashSet<SocketAddr>>>,
     sync_ready: Arc<AtomicBool>,
     block_semaphore: Arc<Semaphore>,
-    ibd_peer: Arc<Mutex<Option<SocketAddr>>>,
+    ibd_peer: Arc<Mutex<Option<(SocketAddr, Instant)>>>,
     chain_height_atomic: Arc<AtomicU64>,
     cached_account_count: Arc<AtomicU64>,
     cached_total_supply: Arc<AtomicU64>,
@@ -1007,7 +1020,7 @@ async fn handle_messages(
                 // During IBD, ignore NewBlock from non-IBD peers
                 {
                     let slot = ibd_peer.lock().await;
-                    if let Some(ibd_addr) = *slot {
+                    if let Some((ibd_addr, _)) = *slot {
                         if ibd_addr != addr {
                             continue;
                         }
@@ -1025,8 +1038,8 @@ async fn handle_messages(
                     let can_sync = {
                         let mut slot = ibd_peer.lock().await;
                         match *slot {
-                            None => { *slot = Some(addr); true }
-                            Some(a) if a == addr => true,
+                            None => { *slot = Some((addr, Instant::now())); true }
+                            Some((a, _)) if a == addr => true,
                             _ => false,
                         }
                     };
@@ -1152,8 +1165,8 @@ async fn handle_messages(
                             let can_sync = {
                                 let mut slot = ibd_peer.lock().await;
                                 match *slot {
-                                    None => { *slot = Some(addr); true }
-                                    Some(a) if a == addr => true,
+                                    None => { *slot = Some((addr, Instant::now())); true }
+                                    Some((a, _)) if a == addr => true,
                                     _ => false,
                                 }
                             };
@@ -1172,7 +1185,7 @@ async fn handle_messages(
                             // Don't request reorg blocks if IBD is running with another peer
                             let can_reorg = {
                                 let slot = ibd_peer.lock().await;
-                                slot.is_none() || *slot == Some(addr)
+                                slot.is_none() || slot.map(|(a,_)| a) == Some(addr)
                             };
                             if can_reorg {
                                 let fork_start = if our_h > 10 { our_h - 10 } else { 1 };
@@ -1282,10 +1295,10 @@ async fn handle_messages(
                     let claimed = {
                         let mut slot = ibd_peer.lock().await;
                         if slot.is_none() {
-                            *slot = Some(addr);
+                            *slot = Some((addr, Instant::now()));
                             true
                         } else {
-                            *slot == Some(addr)
+                            slot.map(|(a,_)| a) == Some(addr)
                         }
                     };
                     if !claimed {
@@ -1321,12 +1334,12 @@ async fn handle_messages(
                 {
                     let mut slot = ibd_peer.lock().await;
                     match *slot {
-                        Some(ibd_addr) if ibd_addr != addr => {
+                        Some((ibd_addr, _)) if ibd_addr != addr => {
                             debug!("[SYNC] Ignoring Blocks from {} — IBD peer is {}", addr, ibd_addr);
                             continue;
                         }
                         None if !blocks.is_empty() => {
-                            *slot = Some(addr);
+                            *slot = Some((addr, Instant::now()));
                         }
                         _ => {}
                     }
@@ -1471,6 +1484,14 @@ async fn handle_messages(
                             *lock = (tip.index, tip.hash, Instant::now());
                         }
                         info!("[SYNC] Applied {} blocks from {} — height now: {}", applied, addr, last_height);
+
+                        // Refresh IBD slot timestamp
+                        {
+                            let mut slot = ibd_peer.lock().await;
+                            if slot.map(|(a,_)| a) == Some(addr) {
+                                *slot = Some((addr, Instant::now()));
+                            }
+                        }
 
                         // Persist to disk after sync batch
                         if let Some(ref dir) = data_dir {
