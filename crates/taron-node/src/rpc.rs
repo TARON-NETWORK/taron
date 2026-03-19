@@ -18,6 +18,20 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 use tracing::info;
 
+/// Cached supply history — refreshed every 30 seconds.
+struct SupplyCache {
+    data: Vec<SupplyPoint>,
+    last_height: u64,
+    last_refresh: Instant,
+}
+
+static SUPPLY_CACHE: std::sync::LazyLock<TokioMutex<SupplyCache>> =
+    std::sync::LazyLock::new(|| TokioMutex::new(SupplyCache {
+        data: Vec::new(),
+        last_height: 0,
+        last_refresh: Instant::now(),
+    }));
+
 // ── Rate limiting ─────────────────────────────────────────────────────────────
 
 /// Per-IP request counter: (count_in_window, window_start).
@@ -140,7 +154,7 @@ pub struct PeerResponse {
     pub connected_secs: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct SupplyPoint {
     pub block_index: u64,
     pub timestamp_ms: u64,
@@ -358,9 +372,10 @@ async fn get_account_by_address(
     match ledger.get_account(&pubkey) {
         Some(state) => {
             let mined = chain.blocks_by_miner(&pubkey);
-            // Collect (timestamp_ms, tx_hash) for all txs involving this address
+            // Scan last 5000 blocks max for tx timestamps (performance)
             let mut tx_timestamps: Vec<(u64, String)> = Vec::new();
-            for i in 0..=chain.height {
+            let scan_start = chain.height().saturating_sub(5000);
+            for i in scan_start..=chain.height() {
                 if let Some(block) = chain.block_at(i) {
                     for tx in &block.transactions {
                         if tx.sender == pubkey || tx.recipient == pubkey {
@@ -404,9 +419,12 @@ async fn get_account_txs(
 
     let chain = node.blockchain.read().await;
     let mut all_txs: Vec<TxWithBlock> = Vec::new();
+    let limit = params.limit.unwrap_or(20).min(100);
+    let max_scan = limit * 50; // scan at most 50x the requested limit
 
-    // Scan all blocks for transactions involving this address
-    for i in 0..=chain.height {
+    // Scan blocks in reverse (newest first) — stop early once we have enough
+    let height = chain.height();
+    for i in (0..=height).rev() {
         if let Some(block) = chain.block_at(i) {
             for tx in &block.transactions {
                 if tx.sender == pubkey || tx.recipient == pubkey {
@@ -426,6 +444,7 @@ async fn get_account_txs(
                 }
             }
         }
+        if all_txs.len() >= max_scan { break; }
     }
     drop(chain);
 
@@ -507,10 +526,23 @@ async fn get_peers(State(node): State<TaronNode>) -> Json<PeersResponse> {
 
 async fn get_supply_history(State(node): State<TaronNode>) -> Json<Vec<SupplyPoint>> {
     use taron_core::PREMINE_BALANCE;
+
+    let current_height = node.chain_height.load(std::sync::atomic::Ordering::Relaxed);
+
+    // Return cached data if fresh (same height or < 30s old)
+    {
+        let cache = SUPPLY_CACHE.lock().await;
+        if !cache.data.is_empty()
+            && (cache.last_height == current_height || cache.last_refresh.elapsed() < Duration::from_secs(30))
+        {
+            return Json(cache.data.clone());
+        }
+    }
+
+    // Rebuild cache
     let chain = node.blockchain.read().await;
     let mut cumulative: u64 = PREMINE_BALANCE;
     let mut points: Vec<SupplyPoint> = Vec::new();
-    // Genesis point includes premine
     if let Some(block) = chain.block_at(0) {
         points.push(SupplyPoint {
             block_index: 0,
@@ -519,10 +551,9 @@ async fn get_supply_history(State(node): State<TaronNode>) -> Json<Vec<SupplyPoi
             cumulative_supply: PREMINE_BALANCE,
         });
     }
-    // Sample every block but cap to 500 points max (downsample for large chains)
     let total = chain.total_blocks() as u64;
     let step = if total <= 500 { 1u64 } else { total / 500 };
-    for i in (1..=chain.height).step_by(step.max(1) as usize) {
+    for i in (1..=chain.height()).step_by(step.max(1) as usize) {
         if let Some(block) = chain.block_at(i) {
             cumulative += block.reward;
             points.push(SupplyPoint {
@@ -533,6 +564,16 @@ async fn get_supply_history(State(node): State<TaronNode>) -> Json<Vec<SupplyPoi
             });
         }
     }
+    drop(chain);
+
+    // Store in cache
+    {
+        let mut cache = SUPPLY_CACHE.lock().await;
+        cache.data = points.clone();
+        cache.last_height = current_height;
+        cache.last_refresh = Instant::now();
+    }
+
     Json(points)
 }
 
