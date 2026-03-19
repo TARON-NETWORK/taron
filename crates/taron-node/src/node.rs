@@ -1422,14 +1422,10 @@ async fn handle_messages(
                                     }
                                 } else {
                                     // No common ancestor in this batch.
-                                    // Revert to genesis only if:
-                                    //   - still in early IBD (height < 200), OR
-                                    //   - established but massively behind (peer > us + 1000):
-                                    //     we are on a minority fork and must resync from scratch.
-                                    // Never revert when close to the tip — just reject the batch.
-                                    let peer_announced = peer_height.unwrap_or(incoming_max);
-                                    if incoming_max > chain.height() + 10
-                                        && (chain.height() < 200 || peer_announced > chain.height() + 300) {
+                                    // Revert to genesis ONLY if at early IBD (height < 200).
+                                    // Never revert an established chain — just reject the batch
+                                    // and let the next IBD chunk resolve it.
+                                    if incoming_max > chain.height() + 10 && chain.height() < 200 {
                                         warn!(
                                             "[SYNC] No common ancestor — peer chain {} vs our height {}. Reverting to genesis for full resync.",
                                             incoming_max, chain.height()
