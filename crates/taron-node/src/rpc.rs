@@ -207,48 +207,7 @@ fn tx_to_response(tx: &taron_core::Transaction) -> TxResponse {
     }
 }
 
-fn account_from_blocks(
-    pubkey: &[u8; 32],
-    state: &taron_core::AccountState,
-    mined: Vec<taron_core::Block>,
-    tx_timestamps: &[(u64, String)], // (timestamp_ms, tx_hash_hex) for all txs involving this account
-) -> AccountResponse {
-    // Combine block timestamps and tx timestamps to compute first/last seen
-    let block_timestamps: Vec<u64> = mined.iter().map(|b| b.timestamp).collect();
-    let tx_ts: Vec<u64> = tx_timestamps.iter().map(|(ts, _)| *ts).collect();
 
-    let all_timestamps: Vec<u64> = block_timestamps.iter().chain(tx_ts.iter()).cloned().collect();
-    let first_seen = all_timestamps.iter().copied().min().unwrap_or(0);
-    let last_seen = all_timestamps.iter().copied().max().unwrap_or(0);
-
-    // Last tx hash: prefer latest tx over latest mined block
-    let last_tx_hash = {
-        let latest_tx = tx_timestamps.iter().max_by_key(|(ts, _)| ts).map(|(_, h)| h.clone());
-        let latest_block = mined.iter().max_by_key(|b| b.timestamp).map(|b| hex::encode(b.hash));
-        match (latest_tx, latest_block) {
-            (Some(tx_h), Some(blk_h)) => {
-                let tx_ts_max = tx_timestamps.iter().max_by_key(|(ts, _)| ts).map(|(ts, _)| *ts).unwrap_or(0);
-                let blk_ts_max = mined.iter().map(|b| b.timestamp).max().unwrap_or(0);
-                if tx_ts_max >= blk_ts_max { tx_h } else { blk_h }
-            }
-            (Some(tx_h), None) => tx_h,
-            (None, Some(blk_h)) => blk_h,
-            (None, None) => String::new(),
-        }
-    };
-
-    AccountResponse {
-        pubkey: hex::encode(pubkey),
-        address: address_from_pubkey(pubkey),
-        balance: state.balance,
-        sequence: state.sequence,
-        blocks_mined: mined.len() as u64,
-        tx_count: tx_timestamps.len() as u64,
-        first_seen,
-        last_seen,
-        last_tx_hash,
-    }
-}
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
