@@ -501,13 +501,21 @@ async fn get_account_blocks(
     let offset = params.offset.unwrap_or(0);
     let limit = params.limit.unwrap_or(20).min(100);
 
-    let all_mined: Vec<BlockResponse> = pubkey
-        .map(|pk| chain.blocks_by_miner(&pk))
-        .unwrap_or_default()
-        .into_iter()
-        .rev()
-        .map(block_to_response)
-        .collect();
+    // Scan last 5000 blocks for mined blocks (performance)
+    let all_mined: Vec<BlockResponse> = if let Some(pk) = pubkey {
+        let scan_start = chain.height().saturating_sub(5000);
+        let mut mined = Vec::new();
+        for i in (scan_start..=chain.height()).rev() {
+            if let Some(block) = chain.block_at(i) {
+                if block.miner == pk {
+                    mined.push(block_to_response(block));
+                }
+            }
+        }
+        mined
+    } else {
+        vec![]
+    };
 
     let total = all_mined.len();
     let page = all_mined.into_iter().skip(offset).take(limit).collect();
