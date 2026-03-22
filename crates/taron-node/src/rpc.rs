@@ -376,26 +376,20 @@ async fn get_account_by_address(
         None => return Json(None),
     };
     let ledger = node.ledger.read().await;
-    let chain = node.blockchain.read().await;
     match ledger.get_account(&pubkey) {
         Some(state) => {
-            // Scan last 5000 blocks for mined blocks + tx timestamps (performance)
-            let scan_start = chain.height().saturating_sub(5000);
-            let mut mined: Vec<taron_core::Block> = Vec::new();
-            let mut tx_timestamps: Vec<(u64, String)> = Vec::new();
-            for i in scan_start..=chain.height() {
-                if let Some(block) = chain.block_at(i) {
-                    if block.miner == pubkey {
-                        mined.push(block.clone());
-                    }
-                    for tx in &block.transactions {
-                        if tx.sender == pubkey || tx.recipient == pubkey {
-                            tx_timestamps.push((tx.timestamp_ms, tx.hash_hex()));
-                        }
-                    }
-                }
-            }
-            Json(Some(account_from_blocks(&pubkey, state, mined, &tx_timestamps)))
+            // Fast path: return ledger data only (no chain scan)
+            Json(Some(AccountResponse {
+                pubkey: hex::encode(&pubkey),
+                address: address_from_pubkey(&pubkey),
+                balance: state.balance,
+                sequence: state.sequence,
+                blocks_mined: 0,
+                tx_count: 0,
+                first_seen: 0,
+                last_seen: 0,
+                last_tx_hash: String::new(),
+            }))
         }
         None => Json(None),
     }
