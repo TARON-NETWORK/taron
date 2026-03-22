@@ -312,11 +312,11 @@ async fn get_accounts(
                 address: address_from_pubkey(pubkey),
                 balance: state.balance,
                 sequence: state.sequence,
-                blocks_mined: 0, // skip expensive chain scan for list view
-                tx_count: 0,
-                first_seen: 0,
-                last_seen: 0,
-                last_tx_hash: String::new(),
+                blocks_mined: state.blocks_mined,
+                tx_count: state.tx_count,
+                first_seen: state.first_seen,
+                last_seen: state.last_seen,
+                last_tx_hash: hex::encode(state.last_tx_hash),
             }
         })
         .collect();
@@ -337,17 +337,16 @@ async fn get_account_by_address(
     let ledger = node.ledger.read().await;
     match ledger.get_account(&pubkey) {
         Some(state) => {
-            // Fast path: return ledger data only (no chain scan)
             Json(Some(AccountResponse {
                 pubkey: hex::encode(&pubkey),
                 address: address_from_pubkey(&pubkey),
                 balance: state.balance,
                 sequence: state.sequence,
-                blocks_mined: 0,
-                tx_count: 0,
-                first_seen: 0,
-                last_seen: 0,
-                last_tx_hash: String::new(),
+                blocks_mined: state.blocks_mined,
+                tx_count: state.tx_count,
+                first_seen: state.first_seen,
+                last_seen: state.last_seen,
+                last_tx_hash: hex::encode(state.last_tx_hash),
             }))
         }
         None => Json(None),

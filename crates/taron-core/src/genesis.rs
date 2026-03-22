@@ -40,6 +40,18 @@ pub struct AccountState {
     pub sequence: u64,
     /// Hash of the last transaction from this account
     pub last_tx_hash: [u8; 32],
+    /// Number of blocks mined by this account
+    #[serde(default)]
+    pub blocks_mined: u64,
+    /// Total transaction count (sent + received)
+    #[serde(default)]
+    pub tx_count: u64,
+    /// Timestamp (ms) of first activity
+    #[serde(default)]
+    pub first_seen: u64,
+    /// Timestamp (ms) of last activity
+    #[serde(default)]
+    pub last_seen: u64,
 }
 
 impl AccountState {
@@ -49,6 +61,10 @@ impl AccountState {
             balance,
             sequence: 0,
             last_tx_hash: [0u8; 32],
+            blocks_mined: 0,
+            tx_count: 0,
+            first_seen: 0,
+            last_seen: 0,
         }
     }
     

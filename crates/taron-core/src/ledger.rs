@@ -185,6 +185,13 @@ impl Ledger {
                     need: total_cost,
                 }
             })?;
+            sender_account.tx_count += 1;
+            if sender_account.first_seen == 0 || tx.timestamp_ms < sender_account.first_seen {
+                sender_account.first_seen = tx.timestamp_ms;
+            }
+            if tx.timestamp_ms > sender_account.last_seen {
+                sender_account.last_seen = tx.timestamp_ms;
+            }
         }
 
         // Apply changes to recipient account (credit amount only, fee is burned)
@@ -192,6 +199,13 @@ impl Ledger {
             let recipient_account = self.get_account_mut(&tx.recipient);
             recipient_account.credit(tx.amount);
             recipient_account.last_tx_hash = tx_hash;
+            recipient_account.tx_count += 1;
+            if recipient_account.first_seen == 0 || tx.timestamp_ms < recipient_account.first_seen {
+                recipient_account.first_seen = tx.timestamp_ms;
+            }
+            if tx.timestamp_ms > recipient_account.last_seen {
+                recipient_account.last_seen = tx.timestamp_ms;
+            }
         }
 
         Ok(())
@@ -225,14 +239,27 @@ impl Ledger {
                     need: total_cost,
                 }
             })?;
-            // Override sequence with the actual tx sequence (skipping the +1 check)
             sender_account.sequence = tx.sequence;
+            sender_account.tx_count += 1;
+            if sender_account.first_seen == 0 || tx.timestamp_ms < sender_account.first_seen {
+                sender_account.first_seen = tx.timestamp_ms;
+            }
+            if tx.timestamp_ms > sender_account.last_seen {
+                sender_account.last_seen = tx.timestamp_ms;
+            }
         }
 
         {
             let recipient_account = self.get_account_mut(&tx.recipient);
             recipient_account.credit(tx.amount);
             recipient_account.last_tx_hash = tx_hash;
+            recipient_account.tx_count += 1;
+            if recipient_account.first_seen == 0 || tx.timestamp_ms < recipient_account.first_seen {
+                recipient_account.first_seen = tx.timestamp_ms;
+            }
+            if tx.timestamp_ms > recipient_account.last_seen {
+                recipient_account.last_seen = tx.timestamp_ms;
+            }
         }
 
         Ok(())
@@ -273,6 +300,18 @@ impl Ledger {
         let account = self.get_account_mut(pubkey);
         account.credit(amount);
         account.last_tx_hash = coinbase_hash;
+        account.blocks_mined += 1;
+    }
+
+    /// Update first_seen/last_seen timestamps for an account
+    pub fn touch_account(&mut self, pubkey: &[u8; 32], timestamp_ms: u64) {
+        let account = self.get_account_mut(pubkey);
+        if account.first_seen == 0 || timestamp_ms < account.first_seen {
+            account.first_seen = timestamp_ms;
+        }
+        if timestamp_ms > account.last_seen {
+            account.last_seen = timestamp_ms;
+        }
     }
 
     /// Get the total number of accounts

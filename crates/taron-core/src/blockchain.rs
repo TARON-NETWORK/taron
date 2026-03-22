@@ -271,6 +271,7 @@ impl Blockchain {
         }
 
         ledger.apply_coinbase(&block.miner, block.reward);
+        ledger.touch_account(&block.miner, block.timestamp);
 
         // Apply transactions
         for (i, tx) in block.transactions.iter().enumerate() {
