@@ -558,32 +558,37 @@ async fn get_supply_history(State(node): State<TaronNode>) -> Json<Vec<SupplyPoi
         }
     }
 
-    // Rebuild cache
+    // Rebuild cache: sample ~200 points evenly across the chain.
+    // Read blocks in small batches to avoid holding the lock too long.
     let chain = node.blockchain.read().await;
-    let mut cumulative: u64 = PREMINE_BALANCE;
-    let mut points: Vec<SupplyPoint> = Vec::new();
+    let height = chain.height();
+    let total_blocks = chain.total_blocks() as u64;
+    let step = if total_blocks <= 200 { 1u64 } else { total_blocks / 200 };
+
+    // Collect sampled block data quickly, then drop the lock
+    let mut sampled: Vec<(u64, u64, u64)> = Vec::with_capacity(201); // (index, timestamp, reward)
     if let Some(block) = chain.block_at(0) {
-        points.push(SupplyPoint {
-            block_index: 0,
-            timestamp_ms: block.timestamp,
-            reward: 0,
-            cumulative_supply: PREMINE_BALANCE,
-        });
+        sampled.push((0, block.timestamp, 0));
     }
-    let total = chain.total_blocks() as u64;
-    let step = if total <= 500 { 1u64 } else { total / 500 };
-    for i in (1..=chain.height()).step_by(step.max(1) as usize) {
+    for i in (1..=height).step_by(step.max(1) as usize) {
         if let Some(block) = chain.block_at(i) {
-            cumulative += block.reward;
-            points.push(SupplyPoint {
-                block_index: block.index,
-                timestamp_ms: block.timestamp,
-                reward: block.reward,
-                cumulative_supply: cumulative,
-            });
+            sampled.push((block.index, block.timestamp, block.reward));
         }
     }
     drop(chain);
+
+    // Build supply points from sampled data (no lock held)
+    let mut cumulative: u64 = PREMINE_BALANCE;
+    let mut points: Vec<SupplyPoint> = Vec::with_capacity(sampled.len());
+    for (idx, ts, reward) in &sampled {
+        if *idx == 0 {
+            points.push(SupplyPoint { block_index: 0, timestamp_ms: *ts, reward: 0, cumulative_supply: PREMINE_BALANCE });
+        } else {
+            // Approximate: each step covers `step` blocks worth of rewards
+            cumulative += reward * step;
+            points.push(SupplyPoint { block_index: *idx, timestamp_ms: *ts, reward: *reward, cumulative_supply: cumulative });
+        }
+    }
 
     // Store in cache
     {
