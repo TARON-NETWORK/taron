@@ -340,17 +340,25 @@ async fn get_accounts(
     Query(params): Query<PaginationParams>,
 ) -> Json<AccountsResponse> {
     let ledger = node.ledger.read().await;
-    let chain = node.blockchain.read().await;
     let all = ledger.all_accounts();
     let total = all.len();
     let offset = params.offset.unwrap_or(0);
     let limit = params.limit.unwrap_or(50).min(200);
 
+    // Fast path: build accounts from ledger only (no chain scan)
     let mut accounts: Vec<AccountResponse> = all.iter()
         .map(|(pubkey, state)| {
-            let mined = chain.blocks_by_miner(pubkey);
-            // For the accounts list we skip full tx scan (expensive) — tx_count = 0 is acceptable here
-            account_from_blocks(pubkey, state, mined, &[])
+            AccountResponse {
+                pubkey: hex::encode(pubkey),
+                address: address_from_pubkey(pubkey),
+                balance: state.balance,
+                sequence: state.sequence,
+                blocks_mined: 0, // skip expensive chain scan for list view
+                tx_count: 0,
+                first_seen: 0,
+                last_seen: 0,
+                last_tx_hash: String::new(),
+            }
         })
         .collect();
     accounts.sort_by(|a, b| b.balance.cmp(&a.balance));
@@ -371,12 +379,15 @@ async fn get_account_by_address(
     let chain = node.blockchain.read().await;
     match ledger.get_account(&pubkey) {
         Some(state) => {
-            let mined = chain.blocks_by_miner(&pubkey);
-            // Scan last 5000 blocks max for tx timestamps (performance)
-            let mut tx_timestamps: Vec<(u64, String)> = Vec::new();
+            // Scan last 5000 blocks for mined blocks + tx timestamps (performance)
             let scan_start = chain.height().saturating_sub(5000);
+            let mut mined: Vec<taron_core::Block> = Vec::new();
+            let mut tx_timestamps: Vec<(u64, String)> = Vec::new();
             for i in scan_start..=chain.height() {
                 if let Some(block) = chain.block_at(i) {
+                    if block.miner == pubkey {
+                        mined.push(block.clone());
+                    }
                     for tx in &block.transactions {
                         if tx.sender == pubkey || tx.recipient == pubkey {
                             tx_timestamps.push((tx.timestamp_ms, tx.hash_hex()));
