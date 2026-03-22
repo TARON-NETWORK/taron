@@ -1291,8 +1291,19 @@ async fn handle_messages(
                         if slot.is_none() {
                             *slot = Some((addr, Instant::now()));
                             true
+                        } else if slot.map(|(a,_)| a) == Some(addr) {
+                            true
                         } else {
-                            slot.map(|(a,_)| a) == Some(addr)
+                            // Check if the current IBD peer is still connected
+                            let ibd_addr = slot.unwrap().0;
+                            let still_connected = peers.lock().await.is_connected(&ibd_addr);
+                            if !still_connected {
+                                info!("[SYNC] IBD peer {} disconnected, releasing slot for {}", ibd_addr, addr);
+                                *slot = Some((addr, Instant::now()));
+                                true
+                            } else {
+                                false
+                            }
                         }
                     };
                     if !claimed {
@@ -1468,6 +1479,14 @@ async fn handle_messages(
                             }
                         }
                     }
+                    // Always refresh IBD slot timestamp when we receive blocks (even if none applied)
+                    {
+                        let mut slot = ibd_peer.lock().await;
+                        if slot.map(|(a,_)| a) == Some(addr) {
+                            *slot = Some((addr, Instant::now()));
+                        }
+                    }
+
                     if applied > 0 {
                         // Update cached best hash and relay lock
                         {
@@ -1478,14 +1497,6 @@ async fn handle_messages(
                             *lock = (tip.index, tip.hash, Instant::now());
                         }
                         info!("[SYNC] Applied {} blocks from {} — height now: {}", applied, addr, last_height);
-
-                        // Refresh IBD slot timestamp
-                        {
-                            let mut slot = ibd_peer.lock().await;
-                            if slot.map(|(a,_)| a) == Some(addr) {
-                                *slot = Some((addr, Instant::now()));
-                            }
-                        }
 
                         // Persist to disk after sync batch
                         if let Some(ref dir) = data_dir {
