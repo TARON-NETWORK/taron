@@ -721,6 +721,7 @@ async fn submit_share(
         nonce: req.nonce,
         hash: [0u8; 32],
         reward: TESTNET_REWARD,
+        difficulty_target: taron_core::bits_to_target(tmpl.difficulty),
         transactions: vec![],
     };
 
@@ -1130,6 +1131,78 @@ async fn get_hashrate(
     Json(HashrateResponse { points })
 }
 
+// ── Payouts + Blocks Found endpoints ──────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct PaginationQuery {
+    page: Option<i64>,
+    page_size: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct PayoutResponse {
+    timestamp_ms: u64,
+    address: String,
+    amount: u64,
+    tx_hash: String,
+    block_index: u64,
+}
+
+#[derive(Serialize)]
+struct PayoutsListResponse {
+    payouts: Vec<PayoutResponse>,
+    total: u64,
+}
+
+async fn get_payouts(
+    State(pool): State<Pool>,
+    Query(q): Query<PaginationQuery>,
+) -> Json<PayoutsListResponse> {
+    let page = q.page.unwrap_or(1).max(1);
+    let page_size = q.page_size.unwrap_or(20).min(100);
+    let offset = (page - 1) * page_size;
+    let (records, total) = pool.db.payouts_paginated(offset, page_size).await.unwrap_or_default();
+    let payouts = records.into_iter().map(|r| PayoutResponse {
+        timestamp_ms: r.timestamp_ms,
+        address: r.to_address,
+        amount: r.amount_micro,
+        tx_hash: r.tx_hash,
+        block_index: r.block_index,
+    }).collect();
+    Json(PayoutsListResponse { payouts, total })
+}
+
+#[derive(Serialize)]
+struct BlockFoundResponse {
+    timestamp_ms: u64,
+    miner_address: String,
+    block_index: u64,
+    nonce: u64,
+}
+
+#[derive(Serialize)]
+struct BlocksFoundListResponse {
+    blocks: Vec<BlockFoundResponse>,
+    total: u64,
+}
+
+async fn get_blocks_found(
+    State(pool): State<Pool>,
+    Query(q): Query<PaginationQuery>,
+) -> Json<BlocksFoundListResponse> {
+    let page = q.page.unwrap_or(1).max(1);
+    let page_size = q.page_size.unwrap_or(20).min(100);
+    let offset = (page - 1) * page_size;
+    let (records, total) = pool.db.blocks_found_paginated(offset, page_size).await.unwrap_or_default();
+    let blocks = records.into_iter().map(|r| BlockFoundResponse {
+        timestamp_ms: r.timestamp_ms,
+        miner_address: r.miner_address,
+        block_index: r.block_index,
+        nonce: r.nonce,
+    }).collect();
+    Json(BlocksFoundListResponse { blocks, total })
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -1246,10 +1319,12 @@ async fn main() {
         .route("/pool/miner-workers",  get(get_miner_workers))
         .route("/pool/miner-earnings", get(get_miner_earnings))
         .route("/pool/hashrate",       get(get_hashrate))
+        .route("/pool/payouts",        get(get_payouts))
+        .route("/pool/blocks-found",   get(get_blocks_found))
         .layer(cors)
         .with_state(pool);
 
-    let addr = format!("127.0.0.1:{}", POOL_PORT);
+    let addr = format!("0.0.0.0:{}", POOL_PORT);
     info!("Pool server listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();

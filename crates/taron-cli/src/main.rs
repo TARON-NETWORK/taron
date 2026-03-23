@@ -527,6 +527,7 @@ async fn main() -> anyhow::Result<()> {
                                     nonce,
                                     hash: [0u8; 32],
                                     reward: TESTNET_REWARD,
+                                    difficulty_target: taron_core::bits_to_target(share_difficulty),
                                     transactions: vec![],
                                 };
 
@@ -676,6 +677,7 @@ async fn main() -> anyhow::Result<()> {
                                     nonce,
                                     hash: [0u8; 32],
                                     reward,
+                                    difficulty_target: cached_difficulty,
                                     transactions: cached_txs.clone(),
                                 };
                                 let hash = candidate.hash_header();

@@ -359,6 +359,62 @@ impl Db {
         Ok(count as u64)
     }
 
+    /// Return all payouts, newest first, with offset/limit.
+    pub async fn payouts_paginated(
+        &self,
+        offset: i64,
+        limit: i64,
+    ) -> Result<(Vec<PayoutRecord>, u64), sqlx::Error> {
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM payouts")
+            .fetch_one(&self.pool)
+            .await?;
+        let rows = sqlx::query(
+            "SELECT timestamp_ms, to_address, amount_micro, tx_hash, block_index \
+             FROM payouts ORDER BY timestamp_ms DESC LIMIT $1 OFFSET $2",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+        let records = rows.iter().map(|r| PayoutRecord {
+            timestamp_ms:  r.get::<i64, _>("timestamp_ms") as u64,
+            to_address:    r.get("to_address"),
+            amount_micro:  r.get::<i64, _>("amount_micro") as u64,
+            tx_hash:       r.get("tx_hash"),
+            block_index:   r.get::<i64, _>("block_index") as u64,
+        }).collect();
+        Ok((records, total as u64))
+    }
+
+    /// Return blocks found by the pool (shares where is_block = true), newest first.
+    pub async fn blocks_found_paginated(
+        &self,
+        offset: i64,
+        limit: i64,
+    ) -> Result<(Vec<ShareRecord>, u64), sqlx::Error> {
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM shares WHERE is_block = TRUE")
+            .fetch_one(&self.pool)
+            .await?;
+        let rows = sqlx::query(
+            "SELECT timestamp_ms, miner_address, miner_pubkey, worker_name, nonce, block_index, is_block \
+             FROM shares WHERE is_block = TRUE ORDER BY timestamp_ms DESC LIMIT $1 OFFSET $2",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+        let records = rows.iter().map(|r| ShareRecord {
+            timestamp_ms:  r.get::<i64, _>("timestamp_ms") as u64,
+            miner_address: r.get("miner_address"),
+            miner_pubkey:  r.get("miner_pubkey"),
+            worker_name:   r.get("worker_name"),
+            nonce:         r.get::<i64, _>("nonce") as u64,
+            block_index:   r.get::<i64, _>("block_index") as u64,
+            is_block:      r.get("is_block"),
+        }).collect();
+        Ok((records, total as u64))
+    }
+
     /// Count total blocks found (shares where is_block = true).
     pub async fn count_blocks_found(&self) -> Result<u64, sqlx::Error> {
         let count: i64 = sqlx::query_scalar(

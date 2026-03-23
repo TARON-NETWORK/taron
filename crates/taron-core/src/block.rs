@@ -37,6 +37,10 @@ pub struct Block {
     pub hash: [u8; 32],
     /// Mining reward credited to the miner, in µTAR.
     pub reward: u64,
+    /// Difficulty target for this block (u64). Hash must be < this value.
+    /// Stored in the header so all nodes agree on the exact difficulty per block.
+    #[serde(default)]
+    pub difficulty_target: u64,
     /// Transactions included in this block (empty for coinbase-only blocks).
     #[serde(default)]
     pub transactions: Vec<Transaction>,
@@ -56,6 +60,7 @@ impl Block {
         data.extend_from_slice(&self.miner);
         data.extend_from_slice(&self.nonce.to_le_bytes());
         data.extend_from_slice(&self.reward.to_le_bytes());
+        data.extend_from_slice(&self.difficulty_target.to_le_bytes());
         Sequal256::hash_fast(&data, MINING_STEPS)
     }
 
@@ -76,6 +81,7 @@ impl Block {
             nonce: 0,
             hash: genesis_hash,
             reward: 0,
+            difficulty_target: 0,
             transactions: vec![],
         }
     }
@@ -114,8 +120,13 @@ impl Block {
         if self.hash != computed {
             return Some(format!("bad hash: stored {} computed {}", hex::encode(&self.hash[..8]), hex::encode(&computed[..8])));
         }
-        if !meets_target(&self.hash, difficulty) {
-            return Some(format!("insufficient difficulty: hash {} target {}", hex::encode(&self.hash[..8]), difficulty));
+        // Verify difficulty_target in header matches what the chain expects
+        if self.difficulty_target != 0 && difficulty != 0 && self.difficulty_target != difficulty {
+            return Some(format!("wrong difficulty_target: block has {} expected {}", self.difficulty_target, difficulty));
+        }
+        let check_target = if self.difficulty_target != 0 { self.difficulty_target } else { difficulty };
+        if !meets_target(&self.hash, check_target) {
+            return Some(format!("insufficient difficulty: hash {} target {}", hex::encode(&self.hash[..8]), check_target));
         }
         if check_timestamp {
             let now_ms = SystemTime::now()
