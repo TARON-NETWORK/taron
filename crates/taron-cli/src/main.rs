@@ -359,21 +359,8 @@ async fn main() -> anyhow::Result<()> {
                     .filter_map(|s| s.parse().ok())
                     .collect();
 
-                let data_dir = get_data_dir(testnet);
-                let config = NodeConfig {
-                    listen_port: port,
-                    seed_nodes,
-                    enable_discovery: !no_discovery,
-                    data_dir: Some(data_dir.clone()),
-                };
-
-                // Create the node first — this opens RocksDB (only one instance allowed)
-                let node = TaronNode::new(config);
-
-                // Channel for mining threads → async relay task (save + broadcast)
-                let mut mine_block_rx: Option<tokio::sync::mpsc::Receiver<Block>> = None;
-
-                // ── Pool mining mode ──────────────────────────────────────────────
+                // ── Pool mining mode (no node needed) ──────────────────────────
+                // Pool miners connect directly to the pool API, no chain sync required.
                 if let Some(pool_url) = pool {
                     let wallet = load_or_create_wallet(testnet, false);
                     // --pubkey overrides local wallet pubkey (use web wallet pubkey)
@@ -567,10 +554,23 @@ async fn main() -> anyhow::Result<()> {
                         }
                     });
 
-                    // Node runs in background for P2P connectivity (no mining)
-                    node.run().await?;
-                    return Ok(());
+                    // Pool mining runs standalone, no node needed
+                    // Just keep the process alive while mining threads work
+                    loop {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                    }
                 }
+
+                // ── Solo mining mode (needs full node) ──────────────────────────
+                let data_dir = get_data_dir(testnet);
+                let config = NodeConfig {
+                    listen_port: port,
+                    seed_nodes,
+                    enable_discovery: !no_discovery,
+                    data_dir: Some(data_dir.clone()),
+                };
+                let node = TaronNode::new(config);
+                let mut mine_block_rx: Option<tokio::sync::mpsc::Receiver<Block>> = None;
 
                 // Start integrated miner if --mine flag is set
                 if mine {
