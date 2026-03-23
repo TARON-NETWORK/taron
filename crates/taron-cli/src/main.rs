@@ -607,6 +607,10 @@ async fn main() -> anyhow::Result<()> {
                     println!(" [MINER] Waiting for initial sync before mining...\n");
 
                     let sync_ready = node.sync_ready.clone();
+                    let chain_height_atomic = node.chain_height.clone();
+                    let cached_difficulty_atomic = node.cached_difficulty.clone();
+                    let cached_account_count_atomic = node.cached_account_count.clone();
+                    let cached_total_supply_atomic = node.cached_total_supply.clone();
 
                     for thread_id in 0..threads {
                         let node_bc = node_bc.clone();
@@ -617,6 +621,10 @@ async fn main() -> anyhow::Result<()> {
                         let total_hashes = total_hashes.clone();
                         let block_tx = block_tx.clone();
                         let sync_ready = sync_ready.clone();
+                        let chain_height_a = chain_height_atomic.clone();
+                        let cached_diff_a = cached_difficulty_atomic.clone();
+                        let cached_ac_a = cached_account_count_atomic.clone();
+                        let cached_ts_a = cached_total_supply_atomic.clone();
 
                         std::thread::spawn(move || {
                             // Wait for initial sync to complete before mining.
@@ -697,6 +705,11 @@ async fn main() -> anyhow::Result<()> {
                                         let mut l = node_ledger.write().await;
                                         match bc.apply_block(&candidate, &mut *l) {
                                             Ok(()) => {
+                                                // Update cached atomics so status and peers see the new height
+                                                chain_height_a.store(candidate.index, std::sync::atomic::Ordering::Release);
+                                                cached_diff_a.store(bc.difficulty, std::sync::atomic::Ordering::Release);
+                                                cached_ac_a.store(l.account_count() as u64, std::sync::atomic::Ordering::Release);
+                                                cached_ts_a.store(l.total_supply(), std::sync::atomic::Ordering::Release);
                                                 // Purge included txs from mempool
                                                 let mut mp = node_mempool.write().await;
                                                 for tx in &candidate.transactions {
