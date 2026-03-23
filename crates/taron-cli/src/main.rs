@@ -392,6 +392,8 @@ async fn main() -> anyhow::Result<()> {
                         #[allow(dead_code)]
                         difficulty: u32,
                         share_difficulty: u32,
+                        #[serde(default)]
+                        difficulty_target: u64,
                     }
 
                     #[derive(serde::Serialize)]
@@ -480,6 +482,7 @@ async fn main() -> anyhow::Result<()> {
                             let mut prev_hash_bytes = [0u8; 32];
                             let mut timestamp = 0u64;
                             let mut share_difficulty = 16u32;
+                            let mut cached_difficulty_target = 0u64;
                             let mut prev_hash_hex = String::new();
 
                             loop {
@@ -489,6 +492,7 @@ async fn main() -> anyhow::Result<()> {
                                         if w.block_index != cached_block_index {
                                             cached_block_index = w.block_index;
                                             share_difficulty = w.share_difficulty;
+                                            cached_difficulty_target = w.difficulty_target;
                                             timestamp = w.timestamp;
                                             prev_hash_hex = w.prev_hash.clone();
                                             if let Ok(b) = hex::decode(&w.pool_pubkey) {
@@ -514,7 +518,7 @@ async fn main() -> anyhow::Result<()> {
                                     nonce,
                                     hash: [0u8; 32],
                                     reward: TESTNET_REWARD,
-                                    difficulty_target: taron_core::bits_to_target(share_difficulty),
+                                    difficulty_target: cached_difficulty_target,
                                     transactions: vec![],
                                 };
 

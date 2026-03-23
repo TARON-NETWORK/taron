@@ -584,6 +584,7 @@ struct WorkResponse {
     difficulty: u32,
     share_difficulty: u32,
     reward: u64,
+    difficulty_target: u64,
 }
 
 async fn get_work(State(pool): State<Pool>, Query(q): Query<WorkQuery>) -> Json<WorkResponse> {
@@ -626,6 +627,7 @@ async fn get_work(State(pool): State<Pool>, Query(q): Query<WorkQuery>) -> Json<
         difficulty,
         share_difficulty,
         reward: TESTNET_REWARD,
+        difficulty_target: taron_core::bits_to_target(difficulty),
     })
 }
 
