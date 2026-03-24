@@ -120,6 +120,10 @@ impl Block {
         if self.hash != computed {
             return Some(format!("bad hash: stored {} computed {}", hex::encode(&self.hash[..8]), hex::encode(&computed[..8])));
         }
+        // Reject blocks without difficulty_target (old format)
+        if self.index > 0 && self.difficulty_target == 0 {
+            return Some("missing difficulty_target in block header".into());
+        }
         // Verify difficulty_target in header matches what the chain expects
         if self.difficulty_target != 0 && difficulty != 0 && self.difficulty_target != difficulty {
             return Some(format!("wrong difficulty_target: block has {} expected {}", self.difficulty_target, difficulty));
