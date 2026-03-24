@@ -322,6 +322,11 @@ impl Blockchain {
         // During IBD we trust the designated peer — only verify chain linkage.
         // Difficulty is NOT checked: the DAA diverges during rebuild.
         // Checkpoints anchor the chain at known-good hashes.
+        // But reject blocks without difficulty_target (old format).
+        if block.index > 0 && block.difficulty_target == 0 {
+            eprintln!("[REJECT-IBD] block #{}: missing difficulty_target", block.index);
+            return Err(TaronError::InvalidBlock);
+        }
         let prev = self.tip();
         if block.index != prev.index + 1 || block.prev_hash != prev.hash {
             eprintln!("[REJECT-IBD] block #{}: bad index or prev_hash", block.index);
