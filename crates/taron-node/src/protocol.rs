@@ -11,6 +11,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 /// Maximum message payload size (1MB).
 pub const MAX_MESSAGE_SIZE: u32 = 1_048_576;
 
+/// Magic bytes identifying a valid TARON protocol frame.
+/// If these bytes are not found, the stream is corrupted.
+const MAGIC: [u8; 4] = [0x54, 0x41, 0x52, 0x4E]; // "TARN"
+
 /// Protocol messages exchanged between TARON peers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
@@ -90,7 +94,7 @@ pub enum Message {
     },
 }
 
-/// Send a message over a stream (length-prefixed JSON).
+/// Send a message over a stream: [MAGIC 4B][LENGTH 4B][JSON payload].
 pub async fn send_message(writer: &mut (impl AsyncWriteExt + Unpin), msg: &Message) -> std::io::Result<()> {
     let payload = serde_json::to_vec(msg)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -101,23 +105,43 @@ pub async fn send_message(writer: &mut (impl AsyncWriteExt + Unpin), msg: &Messa
         ));
     }
     let len = (payload.len() as u32).to_be_bytes();
-    writer.write_all(&len).await?;
-    writer.write_all(&payload).await?;
+    // Write magic + length + payload in a single buffer to avoid partial writes
+    let mut frame = Vec::with_capacity(8 + payload.len());
+    frame.extend_from_slice(&MAGIC);
+    frame.extend_from_slice(&len);
+    frame.extend_from_slice(&payload);
+    writer.write_all(&frame).await?;
     writer.flush().await?;
     Ok(())
 }
 
-/// Receive a message from a stream (length-prefixed JSON).
+/// Receive a message from a stream: [MAGIC 4B][LENGTH 4B][JSON payload].
+/// Falls back to legacy format (no magic) for backward compatibility.
 pub async fn recv_message(reader: &mut (impl AsyncReadExt + Unpin)) -> std::io::Result<Message> {
-    let mut len_buf = [0u8; 4];
-    reader.read_exact(&mut len_buf).await?;
-    let len = u32::from_be_bytes(len_buf);
+    let mut header = [0u8; 4];
+    reader.read_exact(&mut header).await?;
+
+    let len = if header == MAGIC {
+        // New format: magic found, read the actual length next
+        let mut len_buf = [0u8; 4];
+        reader.read_exact(&mut len_buf).await?;
+        u32::from_be_bytes(len_buf)
+    } else {
+        // Legacy format (no magic): these 4 bytes ARE the length
+        let len = u32::from_be_bytes(header);
+        if len > MAX_MESSAGE_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                format!("message too large: {} bytes, stream corrupted", len),
+            ));
+        }
+        len
+    };
+
     if len > MAX_MESSAGE_SIZE {
-        // Stream is likely corrupted — disconnect cleanly instead of
-        // trying to skip bytes (which would take hours for a 2GB "message").
         return Err(std::io::Error::new(
             std::io::ErrorKind::ConnectionReset,
-            format!("message too large: {} bytes, stream corrupted", len),
+            format!("message too large: {} bytes", len),
         ));
     }
     let mut payload = vec![0u8; len as usize];
