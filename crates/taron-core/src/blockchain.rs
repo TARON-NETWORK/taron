@@ -345,16 +345,16 @@ impl Blockchain {
         self.height = block.index;
         self.db.put(KEY_HEIGHT, &self.height.to_le_bytes()).expect("rocksdb put height");
 
-        // Only run DAA above the last checkpoint — below, difficulty is set by checkpoints
-        if self.height > highest_cp && self.height > 0 && self.height % DAA_WINDOW == 0 {
+        // During IBD, use the difficulty_target from the block itself (if present).
+        // Do NOT run DAA/ABC during IBD — the timestamps are meaningless during
+        // fast sync and cause the difficulty to diverge from the network.
+        if block.difficulty_target != 0 {
+            self.difficulty = block.difficulty_target;
+            self.db.put(KEY_DIFF, &self.difficulty.to_le_bytes()).expect("rocksdb put diff");
+        } else if self.height > highest_cp && self.height > 0 && self.height % DAA_WINDOW == 0 {
+            // Fallback for old blocks without difficulty_target
             self.difficulty = self.compute_next_difficulty();
             self.db.put(KEY_DIFF, &self.difficulty.to_le_bytes()).expect("rocksdb put diff");
-        }
-
-        // ABC: adjust target block time during IBD too
-        if self.height > highest_cp && self.height > 0 && self.height % ABC_WINDOW == 0 {
-            self.target_block_ms = self.compute_adaptive_cadence();
-            self.db.put(KEY_TARGET, &self.target_block_ms.to_le_bytes()).expect("rocksdb put target");
         }
 
         Ok(())
