@@ -1522,10 +1522,10 @@ async fn handle_messages(
                                 send_to_peer(out_tx, Message::GetBlocks { from, to })?;
                             } else {
                                 info!("[SYNC] IBD complete — height: {}", our_h);
-                                // Recalibrate difficulty from actual block hashes
+                                // Difficulty is already correct from DAA during IBD.
+                                // No recalibration needed — it caused MIN_TARGET clamping.
                                 {
-                                    let mut ch = blockchain.write().await;
-                                    ch.recalibrate_difficulty_after_ibd();
+                                    let ch = blockchain.read().await;
                                     cached_difficulty.store(ch.difficulty, Ordering::Release);
                                 }
                                 // Release IBD slot so other peers can trigger future syncs
