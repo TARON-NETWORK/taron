@@ -1522,19 +1522,20 @@ async fn handle_messages(
                                 send_to_peer(out_tx, Message::GetBlocks { from, to })?;
                             } else {
                                 info!("[SYNC] IBD complete — height: {}", our_h);
-                                // Difficulty is already correct from DAA during IBD.
-                                // No recalibration needed — it caused MIN_TARGET clamping.
                                 {
                                     let ch = blockchain.read().await;
                                     cached_difficulty.store(ch.difficulty, Ordering::Release);
                                 }
-                                // Release IBD slot so other peers can trigger future syncs
                                 *ibd_peer.lock().await = None;
                                 if !sync_ready.load(Ordering::Relaxed) {
                                     sync_ready.store(true, Ordering::Release);
                                     info!("[SYNC] Sync ready — mining can start");
                                 }
                             }
+                        } else {
+                            // peer_height unknown — ask the peer so IBD can continue
+                            info!("[SYNC] peer_height unknown after applying blocks — requesting ChainHeight");
+                            send_to_peer(out_tx, Message::GetChainHeight)?;
                         }
                     }
                 }
