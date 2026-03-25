@@ -113,9 +113,11 @@ pub async fn recv_message(reader: &mut (impl AsyncReadExt + Unpin)) -> std::io::
     reader.read_exact(&mut len_buf).await?;
     let len = u32::from_be_bytes(len_buf);
     if len > MAX_MESSAGE_SIZE {
+        // Stream is likely corrupted — disconnect cleanly instead of
+        // trying to skip bytes (which would take hours for a 2GB "message").
         return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("message too large: {} bytes", len),
+            std::io::ErrorKind::ConnectionReset,
+            format!("message too large: {} bytes, stream corrupted", len),
         ));
     }
     let mut payload = vec![0u8; len as usize];

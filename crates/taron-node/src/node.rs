@@ -868,6 +868,12 @@ async fn handle_messages(
                         last_recv = Instant::now();
                         m
                     }
+                    Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {
+                        // Stream corrupted (message too large) — disconnect
+                        // so the reconnection loop can establish a fresh connection.
+                        tracing::warn!("[P2P] {} stream corrupted, reconnecting: {}", addr, e);
+                        return Err(e);
+                    }
                     Err(e) => return Err(e),
                 }
             }
