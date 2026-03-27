@@ -1390,6 +1390,15 @@ async fn handle_messages(
                             continue;
                         }
                         None if !blocks.is_empty() => {
+                            let is_seed = crate::seeds::is_seed_addr(&addr);
+                            let any_seed_connected = {
+                                let pm = peers.lock().await;
+                                pm.all_addrs().iter().any(|a| crate::seeds::is_seed_addr(a))
+                            };
+                            if !is_seed && any_seed_connected {
+                                debug!("[SYNC] Ignoring Blocks from non-seed {} — seed is available", addr);
+                                continue;
+                            }
                             *slot = Some((addr, Instant::now()));
                         }
                         _ => {}
