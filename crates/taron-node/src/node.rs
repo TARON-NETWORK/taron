@@ -1310,17 +1310,9 @@ async fn handle_messages(
                 let our_h = blockchain.read().await.height();
                 if peer_h > our_h {
                     let is_seed = crate::seeds::is_seed_addr(&addr);
-                    // Option 2+3: Non-seed peers must wait until a seed has been seen
-                    // or 30 seconds have elapsed since node start.
                     if !is_seed {
-                        let any_seed_connected = {
-                            let pm = peers.lock().await;
-                            pm.all_addrs().iter().any(|a| crate::seeds::is_seed_addr(a))
-                        };
-                        if any_seed_connected {
-                            debug!("[SYNC] Ignoring non-seed {} for IBD — seed is available", addr);
-                            continue;
-                        }
+                        debug!("[SYNC] Ignoring non-seed {} for IBD — only seeds can drive IBD", addr);
+                        continue;
                     }
                     let claimed = {
                         let mut slot = ibd_peer.lock().await;
@@ -1391,12 +1383,8 @@ async fn handle_messages(
                         }
                         None if !blocks.is_empty() => {
                             let is_seed = crate::seeds::is_seed_addr(&addr);
-                            let any_seed_connected = {
-                                let pm = peers.lock().await;
-                                pm.all_addrs().iter().any(|a| crate::seeds::is_seed_addr(a))
-                            };
-                            if !is_seed && any_seed_connected {
-                                debug!("[SYNC] Ignoring Blocks from non-seed {} — seed is available", addr);
+                            if !is_seed {
+                                debug!("[SYNC] Ignoring Blocks from non-seed {} — only seeds can drive IBD", addr);
                                 continue;
                             }
                             *slot = Some((addr, Instant::now()));
