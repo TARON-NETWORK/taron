@@ -720,17 +720,15 @@ async fn connect_to_peer(
         }
     });
 
-    // Send Hello + handshake via the channel
     let _ = btx.send(Message::Hello {
-        version: 1,
+        version: 2,
         listen_port: our_port,
-        user_agent: "taron/0.2.0".into(),
+        user_agent: "taron/0.3.0".into(),
     });
     let _ = btx.send(Message::GetChainHeight);
     let _ = btx.send(Message::GetPeers);
     let _ = btx.send(Message::GetTxHashes);
 
-    // Handle incoming messages (reads from read_half, sends responses via btx)
     let result = handle_messages(&mut read_half, &btx, addr, our_port, mempool, peers.clone(), known, ledger, blockchain, finality, data_dir, discovered_peers, sync_ready, block_semaphore, ibd_peer.clone(), chain_height, cached_account_count, cached_total_supply, cached_difficulty, cached_best_hash).await;
 
     // Release IBD slot if this peer was driving IBD
@@ -794,11 +792,10 @@ async fn handle_peer(
         }
     });
 
-    // Send Hello + announce height via channel
     let _ = btx.send(Message::Hello {
-        version: 1,
+        version: 2,
         listen_port: our_port,
-        user_agent: "taron/0.2.0".into(),
+        user_agent: "taron/0.3.0".into(),
     });
     let _ = btx.send(Message::GetChainHeight);
 
@@ -902,6 +899,12 @@ async fn handle_messages(
 
         match msg {
             Message::Hello { version, user_agent, .. } => {
+                if version < 2 {
+                    tracing::warn!("[P2P] {} rejected: incompatible protocol version {} (need >= 2)", addr, version);
+                    let mut pm = peers.lock().await;
+                    pm.penalize(&addr, crate::peer::PENALTY_BAD_MESSAGE);
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "incompatible protocol version"));
+                }
                 peers.lock().await.update_hello(&addr, version, user_agent);
             }
 
