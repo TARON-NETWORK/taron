@@ -869,9 +869,15 @@ async fn handle_messages(
                         m
                     }
                     Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {
-                        // Stream corrupted (message too large) — disconnect
-                        // so the reconnection loop can establish a fresh connection.
-                        tracing::warn!("[P2P] {} stream corrupted, reconnecting: {}", addr, e);
+                        // Stream corrupted (message too large) — penalize and disconnect.
+                        // After 5 corruptions (5 × 20 = -100), the peer is banned for 1 hour.
+                        tracing::warn!("[P2P] {} stream corrupted, penalizing: {}", addr, e);
+                        {
+                            let mut pm = peers.lock().await;
+                            if pm.penalize(&addr, crate::peer::PENALTY_BAD_MESSAGE) {
+                                tracing::warn!("[P2P] {} banned after repeated stream corruption", addr);
+                            }
+                        }
                         return Err(e);
                     }
                     Err(e) => return Err(e),
