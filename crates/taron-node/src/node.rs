@@ -146,6 +146,11 @@ pub struct TaronNode {
     pub cached_account_count: Arc<AtomicU64>,
     /// Cached total supply — updated atomically after each block for lock-free status reads.
     pub cached_total_supply: Arc<AtomicU64>,
+    /// True once a seed node has been seen during this session.
+    /// Miners cannot claim the IBD slot until a seed has been seen or 30s elapsed.
+    pub seed_seen: Arc<AtomicBool>,
+    /// Node start time — used to enforce seed-wait delay at startup.
+    pub start_time: Instant,
 }
 
 impl TaronNode {
@@ -198,6 +203,8 @@ impl TaronNode {
             cached_best_hash: Arc::new(RwLock::new(initial_hash)),
             cached_account_count: Arc::new(AtomicU64::new(initial_accounts)),
             cached_total_supply: Arc::new(AtomicU64::new(initial_supply)),
+            seed_seen: Arc::new(AtomicBool::new(false)),
+            start_time: Instant::now(),
         }
     }
 
@@ -236,6 +243,8 @@ impl TaronNode {
             cached_best_hash: Arc::new(RwLock::new(initial_hash)),
             cached_account_count: Arc::new(AtomicU64::new(initial_accounts)),
             cached_total_supply: Arc::new(AtomicU64::new(initial_supply)),
+            seed_seen: Arc::new(AtomicBool::new(false)),
+            start_time: Instant::now(),
         }
     }
 
@@ -1301,6 +1310,18 @@ async fn handle_messages(
                 let our_h = blockchain.read().await.height();
                 if peer_h > our_h {
                     let is_seed = crate::seeds::is_seed_addr(&addr);
+                    // Option 2+3: Non-seed peers must wait until a seed has been seen
+                    // or 30 seconds have elapsed since node start.
+                    if !is_seed {
+                        let any_seed_connected = {
+                            let pm = peers.lock().await;
+                            pm.all_addrs().iter().any(|a| crate::seeds::is_seed_addr(a))
+                        };
+                        if any_seed_connected {
+                            debug!("[SYNC] Ignoring non-seed {} for IBD — seed is available", addr);
+                            continue;
+                        }
+                    }
                     let claimed = {
                         let mut slot = ibd_peer.lock().await;
                         if slot.is_none() {
