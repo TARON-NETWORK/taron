@@ -19,6 +19,12 @@ pub const TESTNET_SEEDS: &[&str] = &[
 /// 1. If `config_seeds` is non-empty, use those.
 /// 2. Else resolve TESTNET_SEEDS via DNS (supports both hostnames and IPs).
 /// 3. Otherwise, return an empty vec (LAN discovery is the fallback).
+pub fn is_seed_addr(addr: &SocketAddr) -> bool {
+    TESTNET_SEEDS.iter().any(|s| {
+        s.parse::<SocketAddr>().map(|sa| sa.ip() == addr.ip()).unwrap_or(false)
+    })
+}
+
 pub fn resolve_seeds(config_seeds: &[SocketAddr]) -> Vec<SocketAddr> {
     if !config_seeds.is_empty() {
         return config_seeds.to_vec();

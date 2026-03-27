@@ -1300,7 +1300,7 @@ async fn handle_messages(
                 peer_height = Some(peer_h);
                 let our_h = blockchain.read().await.height();
                 if peer_h > our_h {
-                    // Try to claim the IBD slot — only one peer drives IBD at a time.
+                    let is_seed = crate::seeds::is_seed_addr(&addr);
                     let claimed = {
                         let mut slot = ibd_peer.lock().await;
                         if slot.is_none() {
@@ -1309,11 +1309,21 @@ async fn handle_messages(
                         } else if slot.map(|(a,_)| a) == Some(addr) {
                             true
                         } else {
-                            // Check if the current IBD peer is still connected
-                            let ibd_addr = slot.unwrap().0;
-                            let still_connected = peers.lock().await.is_connected(&ibd_addr);
+                            let (current_addr, last_activity) = slot.unwrap();
+                            let current_is_seed = crate::seeds::is_seed_addr(&current_addr);
+                            let still_connected = peers.lock().await.is_connected(&current_addr);
                             if !still_connected {
-                                info!("[SYNC] IBD peer {} disconnected, releasing slot for {}", ibd_addr, addr);
+                                info!("[SYNC] IBD peer {} disconnected, releasing slot for {}", current_addr, addr);
+                                *slot = Some((addr, Instant::now()));
+                                true
+                            } else if is_seed && !current_is_seed {
+                                info!("[SYNC] Seed {} preempts non-seed IBD peer {}", addr, current_addr);
+                                *slot = Some((addr, Instant::now()));
+                                true
+                            } else if !is_seed && current_is_seed {
+                                false
+                            } else if last_activity.elapsed() > std::time::Duration::from_secs(60) {
+                                info!("[SYNC] IBD peer {} timed out, releasing slot for {}", current_addr, addr);
                                 *slot = Some((addr, Instant::now()));
                                 true
                             } else {
