@@ -908,12 +908,6 @@ async fn handle_messages(
 
         match msg {
             Message::Hello { version, user_agent, .. } => {
-                if version < 2 {
-                    tracing::warn!("[P2P] {} rejected: incompatible protocol version {} (need >= 2)", addr, version);
-                    let mut pm = peers.lock().await;
-                    pm.penalize(&addr, crate::peer::PENALTY_BAD_MESSAGE);
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, "incompatible protocol version"));
-                }
                 peers.lock().await.update_hello(&addr, version, user_agent);
             }
 
