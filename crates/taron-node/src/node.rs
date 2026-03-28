@@ -1303,17 +1303,6 @@ async fn handle_messages(
                 peer_height = Some(peer_h);
                 let our_h = blockchain.read().await.height();
                 if peer_h > our_h {
-                    let is_seed = crate::seeds::is_seed_addr(&addr);
-                    if !is_seed {
-                        let any_seed_connected = {
-                            let pm = peers.lock().await;
-                            pm.all_addrs().iter().any(|a| crate::seeds::is_seed_addr(a))
-                        };
-                        if any_seed_connected {
-                            debug!("[SYNC] Ignoring non-seed {} for IBD — seed available", addr);
-                            continue;
-                        }
-                    }
                     let claimed = {
                         let mut slot = ibd_peer.lock().await;
                         if slot.is_none() {
@@ -1323,19 +1312,12 @@ async fn handle_messages(
                             true
                         } else {
                             let (current_addr, last_activity) = slot.unwrap();
-                            let current_is_seed = crate::seeds::is_seed_addr(&current_addr);
                             let still_connected = peers.lock().await.is_connected(&current_addr);
                             if !still_connected {
                                 info!("[SYNC] IBD peer {} disconnected, releasing slot for {}", current_addr, addr);
                                 *slot = Some((addr, Instant::now()));
                                 true
-                            } else if is_seed && !current_is_seed {
-                                info!("[SYNC] Seed {} preempts non-seed IBD peer {}", addr, current_addr);
-                                *slot = Some((addr, Instant::now()));
-                                true
-                            } else if !is_seed && current_is_seed {
-                                false
-                            } else if last_activity.elapsed() > std::time::Duration::from_secs(60) {
+                            } else if last_activity.elapsed() > std::time::Duration::from_secs(30) {
                                 info!("[SYNC] IBD peer {} timed out, releasing slot for {}", current_addr, addr);
                                 *slot = Some((addr, Instant::now()));
                                 true
@@ -1382,17 +1364,6 @@ async fn handle_messages(
                             continue;
                         }
                         None if !blocks.is_empty() => {
-                            let is_seed = crate::seeds::is_seed_addr(&addr);
-                            if !is_seed {
-                                let any_seed_connected = {
-                                    let pm = peers.lock().await;
-                                    pm.all_addrs().iter().any(|a| crate::seeds::is_seed_addr(a))
-                                };
-                                if any_seed_connected {
-                                    debug!("[SYNC] Ignoring Blocks from non-seed {} — seed available", addr);
-                                    continue;
-                                }
-                            }
                             *slot = Some((addr, Instant::now()));
                         }
                         _ => {}
