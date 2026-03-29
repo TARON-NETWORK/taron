@@ -444,12 +444,14 @@ impl TaronNode {
             });
         }
 
-        // Stale peer reaper: disconnect peers with no activity for 5 minutes
+        // Stale peer reaper + mempool cleanup: every 60 seconds
         {
             let peers = self.peers.clone();
+            let mempool_evict = self.mempool.clone();
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                    mempool_evict.write().await.evict_expired();
                     let stale_addrs: Vec<SocketAddr> = {
                         let pm = peers.lock().await;
                         pm.all_peers()

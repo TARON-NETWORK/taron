@@ -1,17 +1,35 @@
 //! Mempool — verified transaction storage with deduplication.
 
 use std::collections::HashMap;
+use std::time::Instant;
 use taron_core::{Transaction, PoscVerifier};
 
+const TX_TTL_SECS: u64 = 3600;
+
 /// In-memory pool of verified transactions, keyed by tx hash.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Mempool {
-    txs: HashMap<String, Transaction>,
+    txs: HashMap<String, (Transaction, Instant)>,
+}
+
+impl Default for Mempool {
+    fn default() -> Self {
+        Self { txs: HashMap::new() }
+    }
 }
 
 impl Mempool {
     pub fn new() -> Self {
-        Self { txs: HashMap::new() }
+        Self::default()
+    }
+
+    pub fn evict_expired(&mut self) {
+        let before = self.txs.len();
+        self.txs.retain(|_, (_, inserted)| inserted.elapsed().as_secs() < TX_TTL_SECS);
+        let removed = before - self.txs.len();
+        if removed > 0 {
+            tracing::info!("[MEMPOOL] Evicted {} expired transactions", removed);
+        }
     }
 
     /// Number of transactions in the mempool.
@@ -23,49 +41,35 @@ impl Mempool {
         self.txs.is_empty()
     }
 
-    /// Check if a transaction hash is already known.
     pub fn contains(&self, tx_hash: &str) -> bool {
         self.txs.contains_key(tx_hash)
     }
 
-    /// Get all transaction hashes.
     pub fn tx_hashes(&self) -> Vec<String> {
         self.txs.keys().cloned().collect()
     }
 
-    /// Get transactions by hashes (for state sync).
     pub fn get_txs(&self, hashes: &[String]) -> Vec<Transaction> {
         hashes.iter()
-            .filter_map(|h| self.txs.get(h).cloned())
+            .filter_map(|h| self.txs.get(h).map(|(tx, _)| tx.clone()))
             .collect()
     }
 
-    /// Insert a transaction after full validation (signature + PoSC).
-    /// Returns Ok(true) if inserted, Ok(false) if duplicate, Err on invalid.
     pub fn insert(&mut self, tx: Transaction) -> Result<bool, String> {
         let hash = tx.hash_hex();
-
-        // Dedup
         if self.txs.contains_key(&hash) {
             return Ok(false);
         }
-
-        // Verify signature
         tx.verify_signature().map_err(|e| format!("signature: {}", e))?;
-
-        // Verify PoSC proof
         PoscVerifier::verify(&tx).map_err(|e| format!("posc: {}", e))?;
-
-        self.txs.insert(hash, tx);
+        self.txs.insert(hash, (tx, Instant::now()));
         Ok(true)
     }
 
-    /// Get all transactions (for iteration).
     pub fn all_txs(&self) -> Vec<&Transaction> {
-        self.txs.values().collect()
+        self.txs.values().map(|(tx, _)| tx).collect()
     }
 
-    /// Remove a transaction by hash (called after block inclusion).
     pub fn remove(&mut self, tx_hash: &str) {
         self.txs.remove(tx_hash);
     }
