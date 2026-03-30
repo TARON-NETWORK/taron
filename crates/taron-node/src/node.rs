@@ -456,7 +456,7 @@ impl TaronNode {
                         let pm = peers.lock().await;
                         pm.all_peers()
                             .iter()
-                            .filter(|p| p.last_seen.elapsed() > std::time::Duration::from_secs(300))
+                            .filter(|p| p.last_seen.elapsed() > std::time::Duration::from_secs(600))
                             .map(|p| p.addr)
                             .collect()
                     };
