@@ -64,6 +64,14 @@ const KEY_HEIGHT: &[u8] = b"meta:h";
 const KEY_DIFF:   &[u8] = b"meta:d";
 const KEY_TARGET: &[u8] = b"meta:t";
 
+/// Compute the proof-of-work value for a single block.
+/// Lower difficulty_target = harder block = more work.
+/// work = u64::MAX / difficulty_target  (u128 to avoid overflow when summing)
+pub fn block_work(difficulty_target: u64) -> u128 {
+    if difficulty_target == 0 { return 1; }
+    (u64::MAX as u128) / (difficulty_target as u128)
+}
+
 // ── Blockchain ────────────────────────────────────────────────────────────────
 
 /// The TARON blockchain backed by RocksDB.
