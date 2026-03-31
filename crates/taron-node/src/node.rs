@@ -1060,12 +1060,10 @@ async fn handle_messages(
                     if !can_sync { continue; }
                     peer_height = Some(block_index);
                     info!(
-                        "[SYNC] NewBlock #{} from {} is ahead of our height {} — requesting blocks {}..{}",
-                        block_index, addr, our_height, our_height + 1, block_index
+                        "[SYNC] NewBlock #{} from {} is ahead of our height {} — negotiating common ancestor",
+                        block_index, addr, our_height
                     );
-                    let from = our_height + 1;
-                    let to = (from + crate::sync::IBD_CHUNK_SIZE - 1).min(block_index);
-                    send_to_peer(out_tx, Message::GetBlocks { from, to })?;
+                    send_to_peer(out_tx, Message::GetBlockLocator)?;
                     continue;
                 }
 
