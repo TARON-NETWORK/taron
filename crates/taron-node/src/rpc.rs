@@ -76,6 +76,7 @@ pub struct BlockResponse {
     pub nonce: u64,
     pub reward: u64,
     pub tx_count: usize,
+    pub difficulty_target: u64,
 }
 
 #[derive(Serialize)]
@@ -188,6 +189,7 @@ fn block_to_response(b: taron_core::Block) -> BlockResponse {
         nonce: b.nonce,
         reward: b.reward,
         tx_count: b.transactions.len(),
+        difficulty_target: b.difficulty_target,
     }
 }
 
