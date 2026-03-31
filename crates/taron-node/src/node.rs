@@ -1049,15 +1049,19 @@ async fn handle_messages(
                 // Block is ahead of our tip — request sync, don't process yet
                 if block_index > our_height + 1 {
                     // Only request blocks if no other peer is already syncing
-                    let can_sync = {
+                    let (can_sync, already_ibd) = {
                         let mut slot = ibd_peer.lock().await;
                         match *slot {
-                            None => { *slot = Some((addr, Instant::now())); true }
-                            Some((a, _)) if a == addr => true,
-                            _ => false,
+                            None => { *slot = Some((addr, Instant::now())); (true, false) }
+                            Some((a, _)) if a == addr => (true, true), // IBD already in progress with this peer
+                            _ => (false, false),
                         }
                     };
                     if !can_sync { continue; }
+                    // If IBD is already running with this peer, don't restart the locator negotiation.
+                    // The Blocks handler will continue delivering batches; a new GetBlockLocator
+                    // would interrupt mid-stream and restart from scratch.
+                    if already_ibd { continue; }
                     peer_height = Some(block_index);
                     info!(
                         "[SYNC] NewBlock #{} from {} is ahead of our height {} — negotiating common ancestor",
