@@ -73,6 +73,16 @@ pub enum Message {
     /// Announce a newly-mined block (broadcast).
     NewBlock(Block),
 
+    /// Request a block locator from the peer (list of block hashes at exponential heights).
+    /// Used to find the common ancestor before starting IBD.
+    GetBlockLocator,
+
+    /// Response with block hashes at exponentially spaced heights (tip → genesis).
+    /// Each entry is (height, hex_hash). Used to negotiate the common ancestor.
+    BlockLocator {
+        hashes: Vec<(u64, String)>,
+    },
+
     // ── Transaction finality messages ────────────────────────────────────────
 
     /// Acknowledge a transaction (peer has validated it).

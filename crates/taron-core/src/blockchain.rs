@@ -204,6 +204,48 @@ impl Blockchain {
         Ok(reverted)
     }
 
+    /// Generate a block locator: a list of (height, hash) pairs at exponentially spaced
+    /// heights from tip to genesis. Used to negotiate a common ancestor with a peer.
+    pub fn generate_block_locator(&self) -> Vec<(u64, String)> {
+        let mut locator: Vec<(u64, String)> = Vec::new();
+        let tip = self.height;
+        let mut step: u64 = 1;
+        let mut h = tip;
+
+        loop {
+            if let Some(block) = self.block_at(h) {
+                locator.push((h, hex::encode(&block.hash)));
+            }
+            if h == 0 { break; }
+            h = h.saturating_sub(step);
+            if locator.len() > 1 { step = step.saturating_mul(2); }
+            if locator.len() >= 32 { break; }
+        }
+
+        // Always include genesis
+        if locator.last().map(|(h, _)| *h) != Some(0) {
+            if let Some(genesis) = self.block_at(0) {
+                locator.push((0, hex::encode(&genesis.hash)));
+            }
+        }
+
+        locator
+    }
+
+    /// Find the highest common ancestor using a block locator received from a peer.
+    /// Returns the height of the common ancestor, or None if chains share no common block
+    /// (different genesis or completely diverged beyond locator range).
+    pub fn find_common_ancestor_from_locator(&self, locator: &[(u64, String)]) -> Option<u64> {
+        for (height, hash) in locator {
+            if let Some(block) = self.block_at(*height) {
+                if hex::encode(&block.hash) == *hash {
+                    return Some(*height);
+                }
+            }
+        }
+        None
+    }
+
     /// Find the fork point between our chain and a set of incoming blocks.
     /// Returns the height of the last common ancestor, or None if no common block found.
     pub fn find_fork_point(&self, incoming: &[Block]) -> Option<u64> {

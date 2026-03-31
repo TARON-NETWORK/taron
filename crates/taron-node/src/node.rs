@@ -1333,18 +1333,60 @@ async fn handle_messages(
                         continue;
                     }
                     info!(
-                        "[SYNC] Peer {} reports height {} — we are at {} — launching IBD",
+                        "[SYNC] Peer {} reports height {} — we are at {} — negotiating common ancestor",
                         addr, peer_h, our_h
                     );
-                    let from = our_h + 1;
-                    let to = (from + crate::sync::IBD_CHUNK_SIZE - 1).min(peer_h);
-                    info!("[SYNC] Downloading blocks {}..{} from {}", from, to, addr);
-                    send_to_peer(out_tx, Message::GetBlocks { from, to })?;
+                    send_to_peer(out_tx, Message::GetBlockLocator)?;
                 } else {
                     info!("[SYNC] Peer {} height {} — already in sync (height {})", addr, peer_h, our_h);
                     if !sync_ready.load(Ordering::Relaxed) {
                         sync_ready.store(true, Ordering::Release);
                         info!("[SYNC] Sync ready — mining can start");
+                    }
+                }
+            }
+
+            Message::GetBlockLocator => {
+                let locator = blockchain.read().await.generate_block_locator();
+                send_to_peer(out_tx, Message::BlockLocator { hashes: locator })?;
+            }
+
+            Message::BlockLocator { hashes } => {
+                // Only process if we hold the IBD slot for this peer.
+                {
+                    let slot = ibd_peer.lock().await;
+                    if slot.map(|(a, _)| a) != Some(addr) {
+                        debug!("[SYNC] Ignoring BlockLocator from {} — not our IBD peer", addr);
+                        continue;
+                    }
+                }
+                let peer_h = match peer_height {
+                    Some(h) => h,
+                    None => {
+                        warn!("[SYNC] BlockLocator from {} but peer_height unknown — skipping", addr);
+                        continue;
+                    }
+                };
+                let common = blockchain.read().await.find_common_ancestor_from_locator(&hashes);
+                match common {
+                    None => {
+                        warn!("[SYNC] No common ancestor with {} — different genesis or deep fork, disconnecting", addr);
+                        *ibd_peer.lock().await = None;
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "no common ancestor: incompatible chain",
+                        ));
+                    }
+                    Some(ancestor_h) => {
+                        let our_h = blockchain.read().await.height();
+                        let from = ancestor_h + 1;
+                        let to = (from + crate::sync::IBD_CHUNK_SIZE - 1).min(peer_h);
+                        if ancestor_h < our_h {
+                            info!("[SYNC] Fork detected with {} at height {} — peer at {} vs our {} — reorging from {}", addr, ancestor_h, peer_h, our_h, from);
+                        } else {
+                            info!("[SYNC] Common ancestor at {} with {} — downloading blocks {}..{}", ancestor_h, addr, from, to);
+                        }
+                        send_to_peer(out_tx, Message::GetBlocks { from, to })?;
                     }
                 }
             }
