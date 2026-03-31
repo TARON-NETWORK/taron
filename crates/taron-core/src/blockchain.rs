@@ -204,6 +204,21 @@ impl Blockchain {
         Ok(reverted)
     }
 
+    /// Recalibrate ABC and DAA after IBD completes.
+    /// During IBD, ABC (target_block_ms) is skipped to avoid timestamp artifacts.
+    /// After IBD, this must be called once to resync target_block_ms with the network,
+    /// otherwise the next DAA window will compute a wrong difficulty_target.
+    pub fn recalibrate_abc(&mut self) {
+        if self.height >= ABC_WINDOW {
+            self.target_block_ms = self.compute_adaptive_cadence();
+            let _ = self.db.put(KEY_TARGET, &self.target_block_ms.to_le_bytes());
+        }
+        if self.height >= DAA_WINDOW {
+            self.difficulty = self.compute_next_difficulty();
+            let _ = self.db.put(KEY_DIFF, &self.difficulty.to_le_bytes());
+        }
+    }
+
     /// Generate a block locator: a list of (height, hash) pairs at exponentially spaced
     /// heights from tip to genesis. Used to negotiate a common ancestor with a peer.
     pub fn generate_block_locator(&self) -> Vec<(u64, String)> {

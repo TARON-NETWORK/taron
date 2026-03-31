@@ -1415,7 +1415,13 @@ async fn handle_messages(
                 }
                 // Batch block sync — apply each in order, with deep reorg support
                 if blocks.is_empty() {
-                    let h = blockchain.read().await.height();
+                    let h = {
+                        let mut chain = blockchain.write().await;
+                        chain.recalibrate_abc();
+                        let h = chain.height();
+                        cached_difficulty.store(chain.difficulty, Ordering::Release);
+                        h
+                    };
                     info!("[SYNC] Sync complete — height: {}", h);
                     *ibd_peer.lock().await = None;
                     if !sync_ready.load(Ordering::Relaxed) {
@@ -1581,8 +1587,10 @@ async fn handle_messages(
                             } else {
                                 info!("[SYNC] IBD complete — height: {}", our_h);
                                 {
-                                    let ch = blockchain.read().await;
+                                    let mut ch = blockchain.write().await;
+                                    ch.recalibrate_abc();
                                     cached_difficulty.store(ch.difficulty, Ordering::Release);
+                                    info!("[SYNC] ABC recalibrated — target_block_ms: {}ms difficulty: {}", ch.target_block_ms, ch.difficulty);
                                 }
                                 *ibd_peer.lock().await = None;
                                 if !sync_ready.load(Ordering::Relaxed) {
