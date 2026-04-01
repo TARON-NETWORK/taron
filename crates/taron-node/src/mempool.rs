@@ -56,6 +56,10 @@ impl Mempool {
     }
 
     pub fn insert(&mut self, tx: Transaction) -> Result<bool, String> {
+        const MAX_MEMPOOL_SIZE: usize = 5000;
+        if self.txs.len() >= MAX_MEMPOOL_SIZE {
+            return Err(format!("mempool full ({} transactions)", MAX_MEMPOOL_SIZE));
+        }
         let hash = tx.hash_hex();
         if self.txs.contains_key(&hash) {
             return Ok(false);

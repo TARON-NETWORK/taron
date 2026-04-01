@@ -307,6 +307,11 @@ impl Blockchain {
 
         // Validate all transactions before applying any (atomic).
         for (i, tx) in block.transactions.iter().enumerate() {
+            // FIX 4: validate structure (field ranges, non-zero amounts, etc.) for live blocks only.
+            if let Err(e) = tx.validate_structure() {
+                eprintln!("[REJECT] block #{}: tx {} structure invalid: {:?}", block.index, i, e);
+                return Err(TaronError::InvalidBlock);
+            }
             if let Err(e) = tx.verify_signature() {
                 eprintln!("[REJECT] block #{}: tx {} sig fail: {:?}", block.index, i, e);
                 return Err(TaronError::InvalidBlock);
@@ -372,6 +377,11 @@ impl Blockchain {
             return Err(TaronError::InvalidBlock);
         }
 
+        // FIX 2: reject any reward grossly exceeding the canonical reward (2x cap).
+        if block.reward > crate::TESTNET_REWARD * 2 {
+            eprintln!("[REJECT-IBD] block #{}: reward {} exceeds cap {}", block.index, block.reward, crate::TESTNET_REWARD * 2);
+            return Err(TaronError::InvalidBlock);
+        }
         ledger.apply_coinbase(&block.miner, block.reward);
 
         // Use apply_tx_ibd: skips sequence check (local ledger may have diverged
@@ -392,6 +402,11 @@ impl Blockchain {
         // Do NOT run DAA/ABC during IBD — the timestamps are meaningless during
         // fast sync and cause the difficulty to diverge from the network.
         if block.difficulty_target != 0 {
+            // FIX 1: reject any difficulty_target outside the canonical [MIN_TARGET, MAX_TARGET] range.
+            if block.difficulty_target < MIN_TARGET || block.difficulty_target > MAX_TARGET {
+                eprintln!("[REJECT-IBD] block #{}: difficulty_target {} out of bounds", block.index, block.difficulty_target);
+                return Err(TaronError::InvalidBlock);
+            }
             self.difficulty = block.difficulty_target;
             self.db.put(KEY_DIFF, &self.difficulty.to_le_bytes()).expect("rocksdb put diff");
         } else if self.height > highest_cp && self.height > 0 && self.height % DAA_WINDOW == 0 {
@@ -464,8 +479,15 @@ impl Blockchain {
         if self.height < DAA_WINDOW {
             return crate::TESTNET_TARGET;
         }
-        let window_end   = self.block_at(self.height).unwrap();
-        let window_start = self.block_at(self.height - DAA_WINDOW).unwrap();
+        // FIX 3: replace .unwrap() with graceful fallback to avoid panic on missing DB entries.
+        let window_end = match self.block_at(self.height) {
+            Some(b) => b,
+            None => return crate::TESTNET_TARGET,
+        };
+        let window_start = match self.block_at(self.height - DAA_WINDOW) {
+            Some(b) => b,
+            None => return crate::TESTNET_TARGET,
+        };
 
         let actual_ms = window_end.timestamp.saturating_sub(window_start.timestamp);
         let target_ms = self.target_block_ms * DAA_WINDOW;

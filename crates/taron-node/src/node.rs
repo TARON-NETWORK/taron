@@ -1356,7 +1356,7 @@ async fn handle_messages(
                 // This breaks the IBD-restart loop caused by fast miners on peers with old code.
                 if let Some(t) = last_locator_sent {
                     if t.elapsed() < std::time::Duration::from_secs(10) {
-                        debug!("[SYNC] GetBlockLocator from {} throttled ({}ms since last)", addr, t.elapsed().as_millis());
+                        info!("[SYNC] GetBlockLocator from {} throttled ({}ms since last response)", addr, t.elapsed().as_millis());
                         continue;
                     }
                 }
@@ -1393,6 +1393,12 @@ async fn handle_messages(
                     }
                     Some(ancestor_h) => {
                         let our_h = blockchain.read().await.height();
+                        // Reject reorgs deeper than 100 blocks
+                        if our_h > ancestor_h && our_h - ancestor_h > 100 {
+                            warn!("[SYNC] Reorg depth {} > 100 from {} — rejecting", our_h - ancestor_h, addr);
+                            *ibd_peer.lock().await = None;
+                            continue;
+                        }
                         let from = ancestor_h + 1;
                         let to = (from + crate::sync::IBD_CHUNK_SIZE - 1).min(peer_h);
                         if ancestor_h < our_h {
@@ -1406,6 +1412,9 @@ async fn handle_messages(
             }
 
             Message::GetBlocks { from, to } => {
+                // Limit to 500 blocks per request to prevent abuse
+                const MAX_GETBLOCKS_RANGE: u64 = 500;
+                let to = to.min(from + MAX_GETBLOCKS_RANGE);
                 let chain = blockchain.read().await;
                 let blocks = chain.blocks_range(from, to);
                 send_to_peer(out_tx, Message::Blocks(blocks))?;

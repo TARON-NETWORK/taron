@@ -150,29 +150,30 @@ impl Ledger {
         let tx_hash = tx.hash();
         let total_cost = tx.total_cost();
 
-        // Validate sender exists and has sufficient balance
-        let sender_account = self.get_account(&tx.sender);
-        if sender_account.is_none() {
-            return Err(TaronError::InsufficientBalance {
-                have: 0,
-                need: total_cost,
-            });
-        }
+        // Snapshot sender state — single borrow, no double-unwrap.
+        let (sender_balance, expected_sequence) = match self.get_account(&tx.sender) {
+            Some(acc) => (acc.balance, acc.sequence + 1),
+            None => {
+                return Err(TaronError::InsufficientBalance {
+                    have: 0,
+                    need: total_cost,
+                });
+            }
+        };
 
-        let sender_balance = sender_account.unwrap().balance;
-        if sender_balance < total_cost {
-            return Err(TaronError::InsufficientBalance {
-                have: sender_balance,
-                need: total_cost,
-            });
-        }
-
-        // Validate sequence number
-        let expected_sequence = sender_account.unwrap().sequence + 1;
+        // Validate sequence first (cheap check before balance arithmetic).
         if tx.sequence != expected_sequence {
             return Err(TaronError::InvalidSequence {
                 expected: expected_sequence,
                 got: tx.sequence,
+            });
+        }
+
+        // Validate sufficient balance.
+        if sender_balance < total_cost {
+            return Err(TaronError::InsufficientBalance {
+                have: sender_balance,
+                need: total_cost,
             });
         }
 
