@@ -880,14 +880,13 @@ async fn handle_messages(
                         m
                     }
                     Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {
-                        // Stream corrupted (message too large) — penalize and disconnect.
-                        // After 5 corruptions (5 × 20 = -100), the peer is banned for 1 hour.
-                        tracing::warn!("[P2P] {} stream corrupted, penalizing: {}", addr, e);
+                        // Stream corrupted (message too large) — ban immediately for 1 hour.
+                        // Attackers sending 4GB/2GB messages from different IPs never reach
+                        // the penalty threshold — immediate ban on first offence.
+                        tracing::warn!("[P2P] {} sent oversized/corrupted message — banning 1h: {}", addr, e);
                         {
                             let mut pm = peers.lock().await;
-                            if pm.penalize(&addr, crate::peer::PENALTY_BAD_MESSAGE) {
-                                tracing::warn!("[P2P] {} banned after repeated stream corruption", addr);
-                            }
+                            pm.penalize(&addr, 100); // instant ban threshold
                         }
                         return Err(e);
                     }
