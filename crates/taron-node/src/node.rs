@@ -863,6 +863,9 @@ async fn handle_messages(
     // Track the peer's reported chain height so IBD can continue chunk by chunk.
     let mut peer_height: Option<u64> = None;
     let mut last_recv = Instant::now();
+    // Rate-limit BlockLocator responses: ignore repeated GetBlockLocator from same peer
+    // within 10 seconds. Prevents fast-miner flood from looping all peers in IBD restart.
+    let mut last_locator_sent: Option<Instant> = None;
     let mut ping_interval = tokio::time::interval(tokio::time::Duration::from_secs(45));
     ping_interval.tick().await; // first tick is immediate, skip it
 
@@ -1349,8 +1352,17 @@ async fn handle_messages(
             }
 
             Message::GetBlockLocator => {
+                // Rate-limit: ignore if we already responded within the last 10 seconds.
+                // This breaks the IBD-restart loop caused by fast miners on peers with old code.
+                if let Some(t) = last_locator_sent {
+                    if t.elapsed() < std::time::Duration::from_secs(10) {
+                        debug!("[SYNC] GetBlockLocator from {} throttled ({}ms since last)", addr, t.elapsed().as_millis());
+                        continue;
+                    }
+                }
                 let locator = blockchain.read().await.generate_block_locator();
                 send_to_peer(out_tx, Message::BlockLocator { hashes: locator })?;
+                last_locator_sent = Some(Instant::now());
             }
 
             Message::BlockLocator { hashes } => {
