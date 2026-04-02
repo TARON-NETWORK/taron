@@ -1391,11 +1391,18 @@ async fn handle_messages(
                     }
                     Some(ancestor_h) => {
                         let our_h = blockchain.read().await.height();
-                        // Reject reorgs deeper than 100 blocks
-                        if our_h > ancestor_h && our_h - ancestor_h > 100 {
-                            warn!("[SYNC] Reorg depth {} > 100 from {} — rejecting", our_h - ancestor_h, addr);
+                        // Limit deep reorgs — but ONLY when roughly synced.
+                        // During IBD (peer significantly ahead), allow any reorg depth
+                        // so the node can reach the canonical chain from a dead branch.
+                        let reorg_depth = our_h.saturating_sub(ancestor_h);
+                        let peer_far_ahead = peer_height.map(|ph| ph > our_h + 20).unwrap_or(false);
+                        if reorg_depth > 100 && !peer_far_ahead {
+                            warn!("[SYNC] Reorg depth {} > 100 from {} — rejecting (synced mode)", reorg_depth, addr);
                             *ibd_peer.lock().await = None;
                             continue;
+                        }
+                        if reorg_depth > 100 {
+                            info!("[SYNC] Deep reorg {} blocks from {} — allowed (IBD mode, peer ahead)", reorg_depth, addr);
                         }
                         let from = ancestor_h + 1;
                         let to = (from + crate::sync::IBD_CHUNK_SIZE - 1).min(peer_h);
@@ -1450,11 +1457,18 @@ async fn handle_messages(
                         cached_difficulty.store(chain.difficulty, Ordering::Release);
                         h
                     };
-                    info!("[SYNC] Sync complete — height: {}", h);
+                    // Only declare sync complete if we're actually close to the peer's height.
+                    // An empty batch while peer is still far ahead means the peer has no more
+                    // blocks for us right now — not that we're fully synced.
+                    let peer_h_val = peer_height.unwrap_or(0);
+                    let close_enough = peer_h_val == 0 || h + 10 >= peer_h_val;
+                    info!("[SYNC] Sync complete — height: {} peer: {} close_enough: {}", h, peer_h_val, close_enough);
                     *ibd_peer.lock().await = None;
-                    if !sync_ready.load(Ordering::Relaxed) {
+                    if close_enough && !sync_ready.load(Ordering::Relaxed) {
                         sync_ready.store(true, Ordering::Release);
                         info!("[SYNC] Sync ready — mining can start");
+                    } else if !close_enough {
+                        info!("[SYNC] Still {} blocks behind peer — not marking sync ready", peer_h_val.saturating_sub(h));
                     }
                 } else {
                     let mut applied = 0usize;
