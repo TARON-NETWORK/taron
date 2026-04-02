@@ -214,17 +214,19 @@ impl Blockchain {
 
     /// Recalibrate ABC and DAA after IBD completes.
     /// During IBD, ABC (target_block_ms) is skipped to avoid timestamp artifacts.
-    /// After IBD, this must be called once to resync target_block_ms with the network,
-    /// otherwise the next DAA window will compute a wrong difficulty_target.
+    /// After IBD, this must be called once to resync target_block_ms with the network.
+    /// We reset target_block_ms to BASE_TARGET_BLOCK_MS instead of computing from
+    /// historical blocks — historical fast-mining periods would inflate fork_rate to
+    /// 94-98% and push the ABC to MAX (60s), causing live blocks to be rejected.
     pub fn recalibrate_abc(&mut self) {
-        if self.height >= ABC_WINDOW {
-            self.target_block_ms = self.compute_adaptive_cadence();
-            let _ = self.db.put(KEY_TARGET, &self.target_block_ms.to_le_bytes());
-        }
+        // Reset to base target after IBD — let live blocks drive the ABC from here.
+        self.target_block_ms = BASE_TARGET_BLOCK_MS;
+        let _ = self.db.put(KEY_TARGET, &self.target_block_ms.to_le_bytes());
         if self.height >= DAA_WINDOW {
             self.difficulty = self.compute_next_difficulty();
             let _ = self.db.put(KEY_DIFF, &self.difficulty.to_le_bytes());
         }
+        eprintln!("[ABC] Post-IBD recalibrate — reset target_block_ms to {}ms, difficulty: {}", BASE_TARGET_BLOCK_MS, self.difficulty);
     }
 
     /// Generate a block locator: a list of (height, hash) pairs at exponentially spaced

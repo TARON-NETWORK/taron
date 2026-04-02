@@ -380,8 +380,8 @@ impl TaronNode {
                     {
                         let mut slot = ibd_peer_rc.lock().await;
                         if let Some((ibd_addr, last_activity)) = *slot {
-                            if last_activity.elapsed() > std::time::Duration::from_secs(30) {
-                                info!("[SYNC] IBD peer {} timed out (30s no activity) — releasing slot", ibd_addr);
+                            if last_activity.elapsed() > std::time::Duration::from_secs(90) {
+                                info!("[SYNC] IBD peer {} timed out (90s no activity) — releasing slot", ibd_addr);
                                 *slot = None;
                             }
                         }
@@ -1323,7 +1323,7 @@ async fn handle_messages(
                                 info!("[SYNC] IBD peer {} disconnected, releasing slot for {}", current_addr, addr);
                                 *slot = Some((addr, Instant::now()));
                                 true
-                            } else if last_activity.elapsed() > std::time::Duration::from_secs(30) {
+                            } else if last_activity.elapsed() > std::time::Duration::from_secs(90) {
                                 info!("[SYNC] IBD peer {} timed out, releasing slot for {}", current_addr, addr);
                                 *slot = Some((addr, Instant::now()));
                                 true
