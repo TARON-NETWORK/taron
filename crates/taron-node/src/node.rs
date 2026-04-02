@@ -1080,7 +1080,16 @@ async fn handle_messages(
                     // If IBD is already running with this peer, don't restart the locator negotiation.
                     // The Blocks handler will continue delivering batches; a new GetBlockLocator
                     // would interrupt mid-stream and restart from scratch.
-                    if already_ibd { continue; }
+                    // BUT: always update peer_height so IBD doesn't declare "complete" prematurely.
+                    // Without this, the IBD finishes at the height seen when it started, even though
+                    // the peer has mined hundreds more blocks during the download.
+                    if already_ibd {
+                        if block_index > peer_height.unwrap_or(0) {
+                            peer_height = Some(block_index);
+                            debug!("[SYNC] IBD in progress — updated peer_height to #{}", block_index);
+                        }
+                        continue;
+                    }
                     peer_height = Some(block_index);
                     info!(
                         "[SYNC] NewBlock #{} from {} is ahead of our height {} — negotiating common ancestor",
