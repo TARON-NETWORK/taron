@@ -387,6 +387,23 @@ impl TaronNode {
                         }
                     }
 
+                    // Proactive IBD restart: if slot is free, not yet sync_ready, and we have
+                    // connected peers → probe all peers for their chain height. Whichever peer
+                    // responds with a height above ours will claim the IBD slot and restart sync.
+                    // This handles the case where the IBD peer was banned mid-sync (oversized P2P
+                    // attack) and no NewBlock arrived to trigger a natural slot takeover.
+                    {
+                        let slot_free = ibd_peer_rc.lock().await.is_none();
+                        if slot_free && !sync_ready.load(Ordering::Relaxed) {
+                            let pm = peers.lock().await;
+                            let connected = pm.inbound_count() + pm.outbound_count();
+                            if connected > 0 {
+                                info!("[SYNC] IBD slot free but not sync_ready — probing {} peers for chain height", connected);
+                                pm.broadcast(Message::GetChainHeight, None);
+                            }
+                        }
+                    }
+
                     let (outbound, can_accept) = {
                         let pm = peers.lock().await;
                         (pm.outbound_count(), pm.can_accept(PeerDirection::Outbound))
