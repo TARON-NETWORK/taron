@@ -37,9 +37,11 @@ const ABC_STEP_MS: u64 = 5_000; // 5 seconds
 const ABC_SLOW_DOWN_THRESHOLD: f64 = 0.20;
 /// Fork rate threshold below which we speed up (5% fast blocks).
 const ABC_SPEED_UP_THRESHOLD: f64 = 0.05;
-/// Minimum target (hardest difficulty, ~24 leading zero bits).
-const MIN_TARGET: u64 = 1u64 << (64 - 24); // 1u64 << 40
+/// Minimum target (hardest difficulty) — set to 1 so the DAA can scale
+/// to any network hashrate without hitting an artificial cap.
+const MIN_TARGET: u64 = 1;
 /// Maximum target (easiest difficulty, ~8 leading zero bits).
+/// Prevents trivially easy blocks (attacker mining with difficulty=1).
 const MAX_TARGET: u64 = 1u64 << (64 - 8);  // 1u64 << 56
 
 /// Known-good block hashes. Any block at these heights must match exactly.
