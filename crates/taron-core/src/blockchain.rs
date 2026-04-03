@@ -221,13 +221,13 @@ impl Blockchain {
     /// historical blocks — historical fast-mining periods would inflate fork_rate to
     /// 94-98% and push the ABC to MAX (60s), causing live blocks to be rejected.
     pub fn recalibrate_abc(&mut self) {
-        // Reset to base target after IBD — let live blocks drive the ABC from here.
+        // Reset target_block_ms to base after IBD — let live blocks drive the ABC from here.
+        // Do NOT recompute difficulty: self.difficulty is already the last IBD block's
+        // difficulty_target, which IS the network consensus. Recomputing from timestamps
+        // diverges from the network and causes the node to mine at a wrong difficulty,
+        // creating competing blocks and forks with the rest of the network.
         self.target_block_ms = BASE_TARGET_BLOCK_MS;
         let _ = self.db.put(KEY_TARGET, &self.target_block_ms.to_le_bytes());
-        if self.height >= DAA_WINDOW {
-            self.difficulty = self.compute_next_difficulty();
-            let _ = self.db.put(KEY_DIFF, &self.difficulty.to_le_bytes());
-        }
         eprintln!("[ABC] Post-IBD recalibrate — reset target_block_ms to {}ms, difficulty: {}", BASE_TARGET_BLOCK_MS, self.difficulty);
     }
 

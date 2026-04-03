@@ -1537,7 +1537,7 @@ async fn handle_messages(
                                     let max_reorg = if incoming_max > chain.height() + 5 {
                                         chain.height() // full revert allowed during IBD
                                     } else {
-                                        10 // normal reorg limit for competing chains
+                                        50 // allow up to 50-block reorgs in synced mode
                                     };
                                     if reorg_depth <= max_reorg {
                                         info!(
