@@ -18,5 +18,5 @@ pub use genesis::{GenesisState, AccountState, TestnetConfig, premine_address,
                   TESTNET_DIFFICULTY, TESTNET_TARGET, TESTNET_REWARD, PREMINE_BALANCE, PREMINE_PUBKEY};
 pub use ledger::Ledger;
 pub use block::Block;
-pub use blockchain::{Blockchain, block_work};
+pub use blockchain::{Blockchain, block_work, FINALITY_DEPTH};
 pub use finality::{TransactionStatus, TxAck, FinalityTracker, SeenSequences};

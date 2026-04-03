@@ -23,10 +23,11 @@ use crate::{Block, Ledger, TaronError};
 const LWMA_WINDOW: u64 = 60;
 /// DAA: adjust difficulty every N blocks (kept for fallback/old-block compat).
 const DAA_WINDOW: u64 = 10;
-/// Maximum allowed reorg depth in synced mode (not IBD).
-/// Prevents a dominant miner from releasing a deep private chain and wiping
-/// all other miners' work + stalling the pool/explorer.
-const MAX_REORG_DEPTH: u64 = 50;
+/// TARON AFD — Automatic Finality Depth.
+/// Any block with FINALITY_DEPTH or more confirmations is permanently final.
+/// No reorg can ever touch it — enforced at protocol level, not just convention.
+/// Stronger than Bitcoin Cash (10 blocks) and non-bypassable unlike manual checkpoints.
+pub const FINALITY_DEPTH: u64 = 100;
 /// DAA: base target time per block in milliseconds (30 seconds).
 const BASE_TARGET_BLOCK_MS: u64 = 30_000;
 /// ABC (Adaptive Block Cadence): adjust target block time every N blocks
@@ -218,10 +219,12 @@ impl Blockchain {
             eprintln!("[REORG] Refused: target {} is below checkpoint {}", target_height, min_safe);
             return Err(TaronError::InvalidBlock);
         }
-        // Enforce MAX_REORG_DEPTH in synced mode (not when reverting to genesis).
+        // AFD: blocks older than FINALITY_DEPTH confirmations are permanently final.
+        // No reorg can touch them — not even during IBD. Genesis revert (target=0) is exempt
+        // only when the chain hasn't yet accumulated FINALITY_DEPTH blocks.
         let reorg_depth = self.height.saturating_sub(target_height);
-        if target_height != 0 && reorg_depth > MAX_REORG_DEPTH {
-            eprintln!("[REORG] Refused: depth {} exceeds MAX_REORG_DEPTH {}", reorg_depth, MAX_REORG_DEPTH);
+        if target_height != 0 && reorg_depth > FINALITY_DEPTH {
+            eprintln!("[AFD] Refused reorg of {} blocks — exceeds finality depth {}", reorg_depth, FINALITY_DEPTH);
             return Err(TaronError::InvalidBlock);
         }
         let mut reverted = Vec::new();

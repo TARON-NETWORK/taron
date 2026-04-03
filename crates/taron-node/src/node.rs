@@ -12,7 +12,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::net::tcp::OwnedReadHalf;
 use tokio::sync::{Mutex, RwLock, Semaphore, mpsc};
 use tokio::task::JoinHandle;
-use taron_core::{Block, Blockchain, Transaction, Ledger, Wallet, TransactionStatus, TESTNET_DIFFICULTY};
+use taron_core::{Block, Blockchain, Transaction, Ledger, Wallet, TransactionStatus, TESTNET_DIFFICULTY, FINALITY_DEPTH};
 use tracing::{debug, info, warn};
 
 use crate::mempool::Mempool;
@@ -1532,12 +1532,14 @@ async fn handle_messages(
                                 }
                                 let fork_point = chain.find_fork_point(&blocks);
                                 if let Some(fp) = fork_point {
-                                    // Allow deeper reorg when incoming chain is much longer (IBD case)
+                                    // AFD: cap reorg depth at FINALITY_DEPTH always.
+                                    // Exception: fresh nodes (height < FINALITY_DEPTH) can still
+                                    // revert further during IBD — they haven't finalized anything yet.
                                     let reorg_depth = chain.height() - fp;
-                                    let max_reorg = if incoming_max > chain.height() + 5 {
-                                        chain.height() // full revert allowed during IBD
+                                    let max_reorg = if chain.height() < FINALITY_DEPTH {
+                                        chain.height() // fresh node — no finalized blocks yet
                                     } else {
-                                        50 // allow up to 50-block reorgs in synced mode
+                                        FINALITY_DEPTH // AFD enforced — cannot reorg past finality
                                     };
                                     if reorg_depth <= max_reorg {
                                         info!(
