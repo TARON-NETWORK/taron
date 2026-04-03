@@ -18,8 +18,15 @@ use std::path::Path;
 use rocksdb::{DB, Options};
 use crate::{Block, Ledger, TaronError};
 
-/// DAA: adjust difficulty every N blocks.
+/// LWMA: window size for the Linear Weighted Moving Average DAA.
+/// 60 blocks gives fast response (2 min at 30s/block) while smoothing noise.
+const LWMA_WINDOW: u64 = 60;
+/// DAA: adjust difficulty every N blocks (kept for fallback/old-block compat).
 const DAA_WINDOW: u64 = 10;
+/// Maximum allowed reorg depth in synced mode (not IBD).
+/// Prevents a dominant miner from releasing a deep private chain and wiping
+/// all other miners' work + stalling the pool/explorer.
+const MAX_REORG_DEPTH: u64 = 50;
 /// DAA: base target time per block in milliseconds (30 seconds).
 const BASE_TARGET_BLOCK_MS: u64 = 30_000;
 /// ABC (Adaptive Block Cadence): adjust target block time every N blocks
@@ -62,9 +69,10 @@ fn block_key(index: u64) -> [u8; 10] {
     key[2..].copy_from_slice(&index.to_le_bytes());
     key
 }
-const KEY_HEIGHT: &[u8] = b"meta:h";
-const KEY_DIFF:   &[u8] = b"meta:d";
-const KEY_TARGET: &[u8] = b"meta:t";
+const KEY_HEIGHT:    &[u8] = b"meta:h";
+const KEY_DIFF:      &[u8] = b"meta:d";
+const KEY_TARGET:    &[u8] = b"meta:t";
+const KEY_CHAINWORK: &[u8] = b"meta:cw";
 
 /// Compute the proof-of-work value for a single block.
 /// Lower difficulty_target = harder block = more work.
@@ -83,11 +91,14 @@ pub struct Blockchain {
     pub height: u64,
     /// Mining difficulty as a u64 target. A hash is valid if its first 8 bytes
     /// (big-endian u64) are less than this target. Higher = easier, lower = harder.
-    /// Adjusted by ratio every DAA_WINDOW blocks for smooth difficulty changes.
+    /// Adjusted per-block by LWMA (Linear Weighted Moving Average DAA).
     pub difficulty: u64,
     /// Adaptive Block Cadence: current target block time in milliseconds.
     /// Adjusted every ABC_WINDOW blocks based on fork indicators.
     pub target_block_ms: u64,
+    /// Cumulative proof-of-work for the canonical chain.
+    /// Used for fork choice: prefer the chain with the most work.
+    pub chainwork: u128,
 }
 
 impl std::fmt::Debug for Blockchain {
@@ -95,6 +106,7 @@ impl std::fmt::Debug for Blockchain {
         f.debug_struct("Blockchain")
             .field("height", &self.height)
             .field("difficulty", &self.difficulty)
+            .field("chainwork", &self.chainwork)
             .finish()
     }
 }
@@ -176,11 +188,18 @@ impl Blockchain {
         self.height -= 1;
         self.db.put(KEY_HEIGHT, &self.height.to_le_bytes()).expect("rocksdb put height");
 
-        // Restore difficulty from the previous tip if we're at a DAA boundary
-        if (self.height + 1) % DAA_WINDOW == 0 {
-            self.difficulty = self.compute_next_difficulty();
-            self.db.put(KEY_DIFF, &self.difficulty.to_le_bytes()).expect("rocksdb put diff");
+        // Subtract reverted block's work from chainwork
+        let reverted_work = block_work(if tip.difficulty_target != 0 { tip.difficulty_target } else { self.difficulty });
+        self.chainwork = self.chainwork.saturating_sub(reverted_work);
+        let _ = self.db.put(KEY_CHAINWORK, &self.chainwork.to_le_bytes());
+
+        // Recompute LWMA difficulty after revert (per-block DAA)
+        if self.height >= LWMA_WINDOW {
+            self.difficulty = self.compute_lwma();
+        } else {
+            self.difficulty = crate::TESTNET_TARGET;
         }
+        self.db.put(KEY_DIFF, &self.difficulty.to_le_bytes()).expect("rocksdb put diff");
 
         Ok(tip)
     }
@@ -197,6 +216,12 @@ impl Blockchain {
             .unwrap_or(0);
         if target_height < min_safe && target_height != 0 {
             eprintln!("[REORG] Refused: target {} is below checkpoint {}", target_height, min_safe);
+            return Err(TaronError::InvalidBlock);
+        }
+        // Enforce MAX_REORG_DEPTH in synced mode (not when reverting to genesis).
+        let reorg_depth = self.height.saturating_sub(target_height);
+        if target_height != 0 && reorg_depth > MAX_REORG_DEPTH {
+            eprintln!("[REORG] Refused: depth {} exceeds MAX_REORG_DEPTH {}", reorg_depth, MAX_REORG_DEPTH);
             return Err(TaronError::InvalidBlock);
         }
         let mut reverted = Vec::new();
@@ -340,11 +365,18 @@ impl Blockchain {
         self.height = block.index;
         self.db.put(KEY_HEIGHT, &self.height.to_le_bytes()).expect("rocksdb put height");
 
-        // DAA: recalculate difficulty at every window boundary
-        if self.height > 0 && self.height % DAA_WINDOW == 0 {
-            self.difficulty = self.compute_next_difficulty();
+        // LWMA: recalculate difficulty every block once we have enough history.
+        // Per-block adjustment reacts in real-time to hashrate changes — a dominant
+        // miner can no longer mine 60 "free" blocks before the DAA responds.
+        if self.height >= LWMA_WINDOW {
+            self.difficulty = self.compute_lwma();
             self.db.put(KEY_DIFF, &self.difficulty.to_le_bytes()).expect("rocksdb put diff");
         }
+
+        // Update cumulative chainwork
+        let blk_work = block_work(if block.difficulty_target != 0 { block.difficulty_target } else { self.difficulty });
+        self.chainwork = self.chainwork.saturating_add(blk_work);
+        let _ = self.db.put(KEY_CHAINWORK, &self.chainwork.to_le_bytes());
 
         // ABC: adjust target block time at every ABC_WINDOW boundary
         if self.height > 0 && self.height % ABC_WINDOW == 0 {
@@ -401,6 +433,11 @@ impl Blockchain {
         self.db.put(block_key(block.index), &encoded).expect("rocksdb put block");
         self.height = block.index;
         self.db.put(KEY_HEIGHT, &self.height.to_le_bytes()).expect("rocksdb put height");
+
+        // Update cumulative chainwork during IBD
+        let blk_work = block_work(if block.difficulty_target != 0 { block.difficulty_target } else { self.difficulty });
+        self.chainwork = self.chainwork.saturating_add(blk_work);
+        let _ = self.db.put(KEY_CHAINWORK, &self.chainwork.to_le_bytes());
 
         // During IBD, use the difficulty_target from the block itself (if present).
         // Do NOT run DAA/ABC during IBD — the timestamps are meaningless during
@@ -459,9 +496,26 @@ impl Blockchain {
                 let t_arr: [u8; 8] = (&t_bytes[..]).try_into().unwrap_or(BASE_TARGET_BLOCK_MS.to_le_bytes());
                 u64::from_le_bytes(t_arr)
             } else { BASE_TARGET_BLOCK_MS };
+            // Load or compute chainwork (one-time migration for existing chains)
+            let chainwork = if let Ok(Some(cw_bytes)) = db.get(KEY_CHAINWORK) {
+                if cw_bytes.len() == 16 {
+                    u128::from_le_bytes(cw_bytes[..16].try_into().unwrap_or([0u8; 16]))
+                } else { 0u128 }
+            } else { 0u128 };
+            let chainwork = if chainwork == 0 && height > 0 {
+                eprintln!("[CHAIN] Computing chainwork for {} blocks (one-time migration)…", height + 1);
+                let cw: u128 = (0..=height).filter_map(|i| {
+                    db.get(block_key(i)).ok().flatten()
+                        .and_then(|b| bincode::deserialize::<Block>(&b).ok())
+                }).map(|b| block_work(if b.difficulty_target != 0 { b.difficulty_target } else { crate::TESTNET_TARGET }))
+                .sum();
+                let _ = db.put(KEY_CHAINWORK, &cw.to_le_bytes());
+                eprintln!("[CHAIN] Chainwork: {}", cw);
+                cw
+            } else { chainwork };
             let bits = crate::hash::target_to_bits(diff);
-            eprintln!("[CHAIN] Loaded from RocksDB — height: {}, target: {} (~{} bits), block_time: {}ms", height, diff, bits, target_block);
-            return Self { db, height, difficulty: diff, target_block_ms: target_block };
+            eprintln!("[CHAIN] Loaded from RocksDB — height: {}, target: {} (~{} bits), block_time: {}ms, chainwork: {}", height, diff, bits, target_block, chainwork);
+            return Self { db, height, difficulty: diff, target_block_ms: target_block, chainwork };
         }
 
         // ── Case 2: fresh genesis ────────────────────────────────────────────
@@ -471,11 +525,66 @@ impl Blockchain {
         db.put(KEY_HEIGHT, &0u64.to_le_bytes()).expect("rocksdb put height");
         db.put(KEY_DIFF, &crate::TESTNET_TARGET.to_le_bytes()).expect("rocksdb put diff");
         db.put(KEY_TARGET, &BASE_TARGET_BLOCK_MS.to_le_bytes()).expect("rocksdb put target");
+        db.put(KEY_CHAINWORK, &0u128.to_le_bytes()).expect("rocksdb put chainwork");
         eprintln!("[CHAIN] Fresh chain — genesis written to RocksDB");
-        Self { db, height: 0, difficulty: crate::TESTNET_TARGET, target_block_ms: BASE_TARGET_BLOCK_MS }
+        Self { db, height: 0, difficulty: crate::TESTNET_TARGET, target_block_ms: BASE_TARGET_BLOCK_MS, chainwork: 0 }
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────
+
+    /// LWMA-3 DAA (Linear Weighted Moving Average).
+    ///
+    /// Uses the last LWMA_WINDOW blocks. Block at position i (oldest=1, newest=N)
+    /// gets weight i — recent blocks matter more. Solvetime is clamped to
+    /// [1ms, 6*T] to neutralise timestamp manipulation attacks.
+    ///
+    /// next_target = avg_target * weighted_solvetimes / ideal_weighted_solvetimes
+    ///
+    /// Called every block (height >= LWMA_WINDOW) — reacts to hashrate changes
+    /// in real-time rather than waiting for a 10-block window.
+    fn compute_lwma(&self) -> u64 {
+        if self.height < 2 {
+            return crate::TESTNET_TARGET;
+        }
+        let n = LWMA_WINDOW.min(self.height) as u128;
+        let t = self.target_block_ms as u128; // target solvetime in ms
+
+        // Window: the last n blocks (start..=height), need n+1 timestamps
+        let start = self.height.saturating_sub(n as u64);
+
+        let mut weighted_time: u128 = 0;
+        let mut sum_targets: u128 = 0;
+
+        for i in 1..=n {
+            let h = start + i as u64;
+            let curr = match self.block_at(h) { Some(b) => b, None => return self.difficulty };
+            let prev = match self.block_at(h - 1) { Some(b) => b, None => return self.difficulty };
+
+            // Clamp solvetime: [1ms, 6*T] — prevents timestamp manipulation
+            let raw = curr.timestamp.saturating_sub(prev.timestamp) as u128;
+            let solvetime = raw.max(1).min(6 * t);
+
+            let target = if curr.difficulty_target != 0 {
+                curr.difficulty_target as u128
+            } else {
+                self.difficulty as u128
+            };
+
+            weighted_time += i * solvetime;
+            sum_targets += target;
+        }
+
+        // ideal = T * N*(N+1)/2
+        let ideal = t * n * (n + 1) / 2;
+        if weighted_time == 0 || ideal == 0 {
+            return self.difficulty;
+        }
+
+        let avg_target = sum_targets / n;
+        let new_target = (avg_target * weighted_time / ideal) as u64;
+
+        new_target.max(MIN_TARGET).min(MAX_TARGET)
+    }
 
     /// Ratio-based DAA: adjusts the u64 target proportionally to actual vs expected time.
     /// Clamps adjustment to ±4x per window to prevent wild swings.
@@ -553,14 +662,12 @@ impl Blockchain {
         clamped
     }
 
-    /// Replay the DAA from genesis using actual block timestamps.
-    /// This gives the exact same difficulty that the original chain computed.
+    /// Recalibrate difficulty after IBD using LWMA.
+    /// LWMA gives the exact same result as if we had mined those blocks live,
+    /// since it's deterministic from the last LWMA_WINDOW block timestamps/targets.
     pub fn recalibrate_difficulty_after_ibd(&mut self) {
-        // Instead of replaying the entire DAA history (which can diverge due to
-        // rounding), just compute difficulty from the last DAA_WINDOW blocks.
-        // This gives the exact same result as if we had mined those blocks live.
-        if self.height >= DAA_WINDOW {
-            self.difficulty = self.compute_next_difficulty();
+        if self.height >= LWMA_WINDOW {
+            self.difficulty = self.compute_lwma();
         } else {
             self.difficulty = crate::TESTNET_TARGET;
         }
@@ -574,7 +681,7 @@ impl Blockchain {
 
         self.db.put(KEY_DIFF, &self.difficulty.to_le_bytes()).expect("rocksdb put diff");
         self.db.put(KEY_TARGET, &self.target_block_ms.to_le_bytes()).expect("rocksdb put target");
-        eprintln!("[DAA] Recalibrated after IBD — difficulty: {}, target: {}ms", self.difficulty, self.target_block_ms);
+        eprintln!("[LWMA] Recalibrated after IBD — difficulty: {}, target_block_ms: {}", self.difficulty, self.target_block_ms);
     }
 }
 

@@ -12,7 +12,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::net::tcp::OwnedReadHalf;
 use tokio::sync::{Mutex, RwLock, Semaphore, mpsc};
 use tokio::task::JoinHandle;
-use taron_core::{Block, Blockchain, Transaction, Ledger, Wallet, TransactionStatus, TESTNET_DIFFICULTY};
+use taron_core::{Block, Blockchain, Transaction, Ledger, Wallet, TransactionStatus, TESTNET_DIFFICULTY, block_work};
 use tracing::{debug, info, warn};
 
 use crate::mempool::Mempool;
@@ -1540,9 +1540,26 @@ async fn handle_messages(
                                         50 // allow up to 50-block reorgs in synced mode
                                     };
                                     if reorg_depth <= max_reorg {
+                                        // Chainwork check: only reorg if incoming chain has more work.
+                                        // Prevents a dominant miner from replacing honest blocks with
+                                        // easier (lower-target) blocks even if the count is higher.
+                                        let our_chainwork = chain.chainwork;
+                                        let reverted_work: u128 = ((fp + 1)..=chain.height())
+                                            .filter_map(|i| chain.block_at(i))
+                                            .map(|b| block_work(if b.difficulty_target != 0 { b.difficulty_target } else { taron_core::TESTNET_TARGET }))
+                                            .sum();
+                                        let incoming_extra_work: u128 = blocks.iter()
+                                            .filter(|b| b.index > fp)
+                                            .map(|b| block_work(if b.difficulty_target != 0 { b.difficulty_target } else { taron_core::TESTNET_TARGET }))
+                                            .sum();
+                                        let incoming_chainwork = our_chainwork.saturating_sub(reverted_work) + incoming_extra_work;
+                                        if incoming_chainwork <= our_chainwork {
+                                            warn!("[SYNC] Incoming chain has less work ({}) than ours ({}) — skipping reorg", incoming_chainwork, our_chainwork);
+                                            break;
+                                        }
                                         info!(
-                                            "[REORG] Fork detected at height {} (our tip: {}) — reverting {} blocks",
-                                            fp, chain.height(), reorg_depth
+                                            "[REORG] Fork detected at height {} (our tip: {}) — reverting {} blocks (chainwork: {} → {})",
+                                            fp, chain.height(), reorg_depth, our_chainwork, incoming_chainwork
                                         );
                                         let mut ledger_state = ledger.write().await;
                                         match chain.revert_to_height(fp, &mut *ledger_state) {
