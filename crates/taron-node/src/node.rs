@@ -1620,14 +1620,16 @@ async fn handle_messages(
                                 }
                                 let fork_point = chain.find_fork_point(&blocks);
                                 if let Some(fp) = fork_point {
-                                    // AFD: cap reorg depth at FINALITY_DEPTH always.
-                                    // Exception: fresh nodes (height < FINALITY_DEPTH) can still
-                                    // revert further during IBD — they haven't finalized anything yet.
+                                    // AFD: cap reorg depth.
+                                    // Fresh nodes (height < FINALITY_DEPTH): reorg freely during IBD.
+                                    // Synced nodes: cap at SYNCED_MAX_REORG to block selfish mining
+                                    // (private chain release attacks).
+                                    const SYNCED_MAX_REORG: u64 = 10;
                                     let reorg_depth = chain.height() - fp;
                                     let max_reorg = if chain.height() < FINALITY_DEPTH {
                                         chain.height() // fresh node — no finalized blocks yet
                                     } else {
-                                        FINALITY_DEPTH // AFD enforced — cannot reorg past finality
+                                        SYNCED_MAX_REORG // synced — reject deep reorgs
                                     };
                                     if reorg_depth <= max_reorg {
                                         info!(
