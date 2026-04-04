@@ -1,6 +1,6 @@
 //! Peer management — connection tracking, per-IP limits, scoring, and banning.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedSender;
@@ -48,6 +48,8 @@ pub struct PeerInfo {
     pub score: i32,
     /// ISO 3166-1 alpha-2 country code (resolved from IP via geo-lookup).
     pub country: String,
+    /// Anchor peers (seed nodes) are never evicted and are always reconnected.
+    pub is_anchor: bool,
     /// Channel for sending messages to this peer's writer task.
     /// None until the peer handler sets it up.
     #[allow(clippy::type_complexity)]
@@ -71,6 +73,8 @@ pub struct PeerManager {
     banned: HashMap<IpAddr, Instant>,
     /// Connection attempt timestamps per IP (for rate limiting).
     connection_attempts: HashMap<IpAddr, Vec<Instant>>,
+    /// IPs that are anchor seeds — always reconnected, never evicted.
+    anchor_ips: HashSet<IpAddr>,
 }
 
 impl PeerManager {
@@ -80,7 +84,44 @@ impl PeerManager {
             connections_per_ip: HashMap::new(),
             banned: HashMap::new(),
             connection_attempts: HashMap::new(),
+            anchor_ips: HashSet::new(),
         }
+    }
+
+    /// Register the set of anchor IPs (seed nodes).
+    /// Must be called at startup before any peers connect.
+    pub fn set_anchor_ips(&mut self, ips: HashSet<IpAddr>) {
+        self.anchor_ips = ips;
+    }
+
+    /// Returns true if this IP is a known anchor seed.
+    pub fn is_anchor_ip(&self, ip: IpAddr) -> bool {
+        self.anchor_ips.contains(&ip)
+    }
+
+    /// How many anchor seeds are currently connected.
+    pub fn anchor_connected_count(&self) -> usize {
+        self.peers.values().filter(|p| p.is_anchor).count()
+    }
+
+    /// Evict the oldest non-anchor outbound peer to make room for an anchor.
+    /// Returns the broadcast_tx of the evicted peer (drop it to close the connection).
+    pub fn evict_oldest_non_anchor_outbound(&mut self) -> Option<(SocketAddr, Option<UnboundedSender<Message>>)> {
+        let oldest_addr = self.peers.values()
+            .filter(|p| p.direction == PeerDirection::Outbound && !p.is_anchor)
+            .min_by_key(|p| p.connected_at)
+            .map(|p| p.addr);
+        if let Some(addr) = oldest_addr {
+            if let Some(mut peer) = self.peers.remove(&addr) {
+                let ip = addr.ip();
+                let count = self.connections_per_ip.entry(ip).or_insert(0);
+                *count = count.saturating_sub(1);
+                if *count == 0 { self.connections_per_ip.remove(&ip); }
+                let tx = peer.broadcast_tx.take();
+                return Some((addr, tx));
+            }
+        }
+        None
     }
 
     /// Returns true if the IP is currently banned (auto-expires after 1 hour).
@@ -164,6 +205,7 @@ impl PeerManager {
             return false;
         }
         let now = Instant::now();
+        let is_anchor = self.anchor_ips.contains(&addr.ip());
         self.peers.insert(addr, PeerInfo {
             addr,
             direction,
@@ -173,6 +215,7 @@ impl PeerManager {
             last_seen: now,
             score: 0,
             country: String::new(),
+            is_anchor,
             broadcast_tx: None,
         });
         *self.connections_per_ip.entry(ip).or_insert(0) += 1;

@@ -320,6 +320,14 @@ impl TaronNode {
         let own_ips = Arc::new(own_ips);
         let listen_port = self.config.listen_port;
 
+        // Register anchor IPs in PeerManager (all seed nodes are anchors).
+        {
+            let seed_addrs = resolve_seeds(&self.config.seed_nodes);
+            let anchor_ips: std::collections::HashSet<std::net::IpAddr> =
+                seed_addrs.iter().map(|a| a.ip()).collect();
+            self.peers.lock().await.set_anchor_ips(anchor_ips);
+        }
+
         // Connect to seed nodes — config seeds take priority; fall back to TESTNET_SEEDS.
         // Filter out self-connections (server connecting to itself via seed DNS).
         let seeds: Vec<_> = resolve_seeds(&self.config.seed_nodes)
@@ -410,11 +418,9 @@ impl TaronNode {
                     };
                     if !can_accept { continue; }
 
-                    // Collect candidates: seeds + discovered peers
+                    // Collect candidates: discovered peers (seeds handled by anchor loop)
                     let mut candidates: Vec<SocketAddr> = Vec::new();
-                    if outbound < 2 {
-                        candidates.extend(resolve_seeds(&config_seeds));
-                    }
+                    candidates.extend(resolve_seeds(&config_seeds));
                     // Drain discovered peers
                     {
                         let mut disc = discovered.write().await;
@@ -457,6 +463,88 @@ impl TaronNode {
                             }
                         });
                     }
+                }
+            });
+        }
+
+        // Anchor maintenance loop — every 30s.
+        // Ensures the 5 seed nodes are ALWAYS connected, even if tar11f888 (or any
+        // attacker) fills all outbound slots (eclipse attack). If a seed is missing
+        // and slots are full, the oldest non-anchor outbound peer is evicted.
+        {
+            let peers = self.peers.clone();
+            let mempool = self.mempool.clone();
+            let known = self.peer_known_txs.clone();
+            let ledger = self.ledger.clone();
+            let blockchain = self.blockchain.clone();
+            let finality = self.finality.clone();
+            let data_dir = self.data_dir.clone();
+            let port = self.config.listen_port;
+            let config_seeds = self.config.seed_nodes.clone();
+            let discovered = self.discovered_peers.clone();
+            let sync_ready = self.sync_ready.clone();
+            let block_sem = self.block_semaphore.clone();
+            let ibd_peer_rc = self.ibd_peer.clone();
+            let chain_h = self.chain_height.clone();
+            let cached_ac = self.cached_account_count.clone();
+            let cached_ts = self.cached_total_supply.clone();
+            let cached_diff = self.cached_difficulty.clone();
+            let cached_bh = self.cached_best_hash.clone();
+            let own_ips_anchor = own_ips.clone();
+            tokio::spawn(async move {
+                // Initial delay — let the node finish starting up
+                tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
+                loop {
+                    let anchors = resolve_seeds(&config_seeds);
+                    for anchor in &anchors {
+                        // Skip self-connections
+                        if own_ips_anchor.contains(&anchor.ip()) && anchor.port() == port { continue; }
+
+                        let already_connected = peers.lock().await.is_connected(anchor);
+                        if already_connected { continue; }
+
+                        // Slot check — evict oldest non-anchor if needed
+                        let need_evict = {
+                            let pm = peers.lock().await;
+                            !pm.can_accept(PeerDirection::Outbound)
+                        };
+                        if need_evict {
+                            let evicted = peers.lock().await.evict_oldest_non_anchor_outbound();
+                            if let Some((evicted_addr, tx)) = evicted {
+                                warn!("[ANCHOR] Evicted {} to make room for seed {}", evicted_addr, anchor);
+                                drop(tx); // closes the write side → peer disconnects
+                                tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                            } else {
+                                // All outbound peers are anchors — nothing to evict
+                                continue;
+                            }
+                        }
+
+                        info!("[ANCHOR] Reconnecting to seed {}", anchor);
+                        let mempool = mempool.clone();
+                        let peers = peers.clone();
+                        let known = known.clone();
+                        let ledger = ledger.clone();
+                        let blockchain = blockchain.clone();
+                        let finality = finality.clone();
+                        let data_dir = data_dir.clone();
+                        let discovered = discovered.clone();
+                        let sync_ready = sync_ready.clone();
+                        let block_sem = block_sem.clone();
+                        let ibd_peer_rc = ibd_peer_rc.clone();
+                        let chain_h = chain_h.clone();
+                        let cached_ac = cached_ac.clone();
+                        let cached_ts = cached_ts.clone();
+                        let cached_diff = cached_diff.clone();
+                        let cached_bh = cached_bh.clone();
+                        let anchor = *anchor;
+                        tokio::spawn(async move {
+                            if let Err(e) = connect_to_peer(anchor, port, mempool, peers, known, ledger, blockchain, finality, data_dir, discovered, sync_ready, block_sem, ibd_peer_rc, chain_h, cached_ac, cached_ts, cached_diff, cached_bh).await {
+                                debug!("[ANCHOR] Connect to seed {} failed: {}", anchor, e);
+                            }
+                        });
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
                 }
             });
         }
