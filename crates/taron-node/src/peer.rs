@@ -151,6 +151,12 @@ impl PeerManager {
         true
     }
 
+    /// Ban an IP directly for 1 hour, regardless of whether it has a peer entry.
+    /// Use for immediate bans (corrupted messages, wrong genesis, etc.).
+    pub fn ban_ip(&mut self, ip: IpAddr) {
+        self.banned.insert(ip, Instant::now());
+    }
+
     /// Apply a behavior penalty to a peer.
     /// Returns true if the penalty pushed the score below the ban threshold —
     /// the caller should then disconnect the peer.

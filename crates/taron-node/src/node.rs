@@ -993,7 +993,7 @@ async fn handle_messages(
                         tracing::warn!("[P2P] {} sent oversized/corrupted message — banning 1h: {}", addr, e);
                         {
                             let mut pm = peers.lock().await;
-                            pm.penalize(&addr, 100); // instant ban threshold
+                            pm.ban_ip(addr.ip());
                         }
                         return Err(e);
                     }
@@ -1021,7 +1021,8 @@ async fn handle_messages(
             Message::Hello { version, user_agent, genesis_hash, .. } => {
                 // Reject peers on a different chain (fork at genesis level)
                 if !genesis_hash.is_empty() && genesis_hash != genesis_hash_hex() {
-                    warn!("[P2P] {} sent wrong genesis {} — disconnecting", addr, &genesis_hash[..16]);
+                    warn!("[P2P] {} sent wrong genesis {} — banning 1h", addr, &genesis_hash[..16]);
+                    peers.lock().await.ban_ip(addr.ip());
                     return Err(io::Error::new(io::ErrorKind::InvalidData, "genesis mismatch"));
                 }
                 peers.lock().await.update_hello(&addr, version, user_agent);
