@@ -550,7 +550,10 @@ impl Blockchain {
             return crate::TESTNET_TARGET;
         }
         let n = LWMA_WINDOW.min(self.height) as u128;
-        let t = self.target_block_ms as u128; // target solvetime in ms
+        // Use fixed BASE_TARGET_BLOCK_MS — not the ABC-adjusted target_block_ms.
+        // ABC is local/per-node and not consensus data → using it here causes
+        // different nodes to compute different targets from the same block history.
+        let t = BASE_TARGET_BLOCK_MS as u128;
 
         // Window: the last n blocks (start..=height), need n+1 timestamps
         let start = self.height.saturating_sub(n as u64);
