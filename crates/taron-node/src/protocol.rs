@@ -23,6 +23,9 @@ pub enum Message {
         version: u8,
         listen_port: u16,
         user_agent: String,
+        /// Hex-encoded genesis block hash — peers on a different chain are disconnected.
+        #[serde(default)]
+        genesis_hash: String,
     },
     /// Request peer list from remote.
     GetPeers,

@@ -86,6 +86,11 @@ impl Block {
         }
     }
 
+    /// Return the genesis hash as a hex string — used for peer handshake verification.
+    pub fn genesis_hash_hex_impl() -> String {
+        hex::encode(Block::genesis().hash)
+    }
+
     /// Validate this block against its predecessor.
     ///
     /// Checks:
@@ -155,6 +160,12 @@ impl Block {
         }
         None
     }
+}
+
+/// Return the genesis block hash as a lowercase hex string.
+/// Used during peer handshake to reject nodes on a different chain.
+pub fn genesis_hash_hex() -> String {
+    Block::genesis_hash_hex_impl()
 }
 
 #[cfg(test)]

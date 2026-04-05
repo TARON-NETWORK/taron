@@ -12,7 +12,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::net::tcp::OwnedReadHalf;
 use tokio::sync::{Mutex, RwLock, Semaphore, mpsc};
 use tokio::task::JoinHandle;
-use taron_core::{Block, Blockchain, Transaction, Ledger, Wallet, TransactionStatus, TESTNET_DIFFICULTY, FINALITY_DEPTH};
+use taron_core::{Block, Blockchain, Transaction, Ledger, Wallet, TransactionStatus, TESTNET_DIFFICULTY, FINALITY_DEPTH, genesis_hash_hex};
 use tracing::{debug, info, warn};
 
 use crate::mempool::Mempool;
@@ -840,6 +840,7 @@ async fn connect_to_peer(
         version: 2,
         listen_port: our_port,
         user_agent: "taron/0.3.0".into(),
+        genesis_hash: genesis_hash_hex(),
     });
     let _ = btx.send(Message::GetChainHeight);
     let _ = btx.send(Message::GetPeers);
@@ -912,6 +913,7 @@ async fn handle_peer(
         version: 2,
         listen_port: our_port,
         user_agent: "taron/0.3.0".into(),
+        genesis_hash: genesis_hash_hex(),
     });
     let _ = btx.send(Message::GetChainHeight);
 
@@ -1016,7 +1018,12 @@ async fn handle_messages(
         };
 
         match msg {
-            Message::Hello { version, user_agent, .. } => {
+            Message::Hello { version, user_agent, genesis_hash, .. } => {
+                // Reject peers on a different chain (fork at genesis level)
+                if !genesis_hash.is_empty() && genesis_hash != genesis_hash_hex() {
+                    warn!("[P2P] {} sent wrong genesis {} — disconnecting", addr, &genesis_hash[..16]);
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "genesis mismatch"));
+                }
                 peers.lock().await.update_hello(&addr, version, user_agent);
             }
 
@@ -1900,6 +1907,7 @@ mod tests {
                 version: 1,
                 listen_port: addr_a.port(),
                 user_agent: "node-a".into(),
+                genesis_hash: genesis_hash_hex(),
             }).await.unwrap();
             let msg = protocol::recv_message(&mut stream).await.unwrap();
             match msg {
@@ -1920,6 +1928,7 @@ mod tests {
             version: 1,
             listen_port: 9999,
             user_agent: "node-b".into(),
+            genesis_hash: genesis_hash_hex(),
         }).await.unwrap();
 
         let pool_size = server.await.unwrap();
