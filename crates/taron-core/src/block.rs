@@ -120,8 +120,22 @@ impl Block {
         if self.hash != computed {
             return Some(format!("bad hash: stored {} computed {}", hex::encode(&self.hash[..8]), hex::encode(&computed[..8])));
         }
-        // Accept both old format (difficulty_target == 0) and new format
-        let check_target = if self.difficulty_target != 0 { self.difficulty_target } else { difficulty };
+        // Accept both old format (difficulty_target == 0) and new format.
+        // If the block declares its own difficulty_target, validate it is not
+        // easier than 4× the network difficulty — prevents miners from setting
+        // an artificially high (easy) target to mine blocks cheaply.
+        let check_target = if self.difficulty_target != 0 {
+            let max_allowed = difficulty.saturating_mul(4);
+            if self.difficulty_target > max_allowed {
+                return Some(format!(
+                    "difficulty_target too easy: block={} network={} max_allowed={}",
+                    self.difficulty_target, difficulty, max_allowed
+                ));
+            }
+            self.difficulty_target
+        } else {
+            difficulty
+        };
         if !meets_target(&self.hash, check_target) {
             return Some(format!("insufficient difficulty: hash {} target {}", hex::encode(&self.hash[..8]), check_target));
         }
