@@ -1472,14 +1472,23 @@ async fn handle_messages(
                     // If this peer was the IBD peer, it's fully done — recalibrate and unlock.
                     let is_ibd_peer = ibd_peer.lock().await.map(|(a, _)| a) == Some(addr);
                     if is_ibd_peer {
-                        info!("[SYNC] IBD fully verified — height: {} (peer: {})", our_h, peer_h);
+                        info!("[SYNC] IBD peer {} at {} — we are at {} — polling all peers for higher tip", addr, peer_h, our_h);
+                        // The IBD peer may itself be behind the real network tip.
+                        // Broadcast GetChainHeight to all peers — if any respond with a
+                        // higher height, their ChainHeight handler will claim the IBD slot
+                        // and continue syncing. Only finalize if no one is ahead.
+                        *ibd_peer.lock().await = None;
+                        peers.lock().await.broadcast(Message::GetChainHeight, None);
+                        // Give other peers a chance to respond. If none are ahead, the
+                        // next ChainHeight(h <= our_h) from any peer will finalize IBD.
+                        // Finalize now as well so mining can start — any higher peer will
+                        // reclaim the slot via the ChainHeight handler.
                         {
                             let mut ch = blockchain.write().await;
                             ch.recalibrate_abc();
                             cached_difficulty.store(ch.difficulty, Ordering::Release);
                             info!("[SYNC] ABC recalibrated — target_block_ms: {}ms difficulty: {}", ch.target_block_ms, ch.difficulty);
                         }
-                        *ibd_peer.lock().await = None;
                         if !sync_ready.load(Ordering::Relaxed) {
                             sync_ready.store(true, Ordering::Release);
                             info!("[SYNC] Sync ready — mining can start");
