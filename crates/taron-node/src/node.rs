@@ -1468,10 +1468,28 @@ async fn handle_messages(
                     );
                     send_to_peer(out_tx, Message::GetBlockLocator)?;
                 } else {
-                    info!("[SYNC] Peer {} height {} — already in sync (height {})", addr, peer_h, our_h);
-                    if !sync_ready.load(Ordering::Relaxed) {
-                        sync_ready.store(true, Ordering::Release);
-                        info!("[SYNC] Sync ready — mining can start");
+                    // peer_h <= our_h: we are at or ahead of this peer.
+                    // If this peer was the IBD peer, it's fully done — recalibrate and unlock.
+                    let is_ibd_peer = ibd_peer.lock().await.map(|(a, _)| a) == Some(addr);
+                    if is_ibd_peer {
+                        info!("[SYNC] IBD fully verified — height: {} (peer: {})", our_h, peer_h);
+                        {
+                            let mut ch = blockchain.write().await;
+                            ch.recalibrate_abc();
+                            cached_difficulty.store(ch.difficulty, Ordering::Release);
+                            info!("[SYNC] ABC recalibrated — target_block_ms: {}ms difficulty: {}", ch.target_block_ms, ch.difficulty);
+                        }
+                        *ibd_peer.lock().await = None;
+                        if !sync_ready.load(Ordering::Relaxed) {
+                            sync_ready.store(true, Ordering::Release);
+                            info!("[SYNC] Sync ready — mining can start");
+                        }
+                    } else {
+                        info!("[SYNC] Peer {} height {} — already in sync (height {})", addr, peer_h, our_h);
+                        if !sync_ready.load(Ordering::Relaxed) {
+                            sync_ready.store(true, Ordering::Release);
+                            info!("[SYNC] Sync ready — mining can start");
+                        }
                     }
                 }
             }
@@ -1757,18 +1775,12 @@ async fn handle_messages(
                                 info!("[SYNC] Continuing IBD: downloading blocks {}..{} from {}", from, to, addr);
                                 send_to_peer(out_tx, Message::GetBlocks { from, to })?;
                             } else {
-                                info!("[SYNC] IBD complete — height: {}", our_h);
-                                {
-                                    let mut ch = blockchain.write().await;
-                                    ch.recalibrate_abc();
-                                    cached_difficulty.store(ch.difficulty, Ordering::Release);
-                                    info!("[SYNC] ABC recalibrated — target_block_ms: {}ms difficulty: {}", ch.target_block_ms, ch.difficulty);
-                                }
-                                *ibd_peer.lock().await = None;
-                                if !sync_ready.load(Ordering::Relaxed) {
-                                    sync_ready.store(true, Ordering::Release);
-                                    info!("[SYNC] Sync ready — mining can start");
-                                }
+                                // our_h >= peer's last known height — but the network may have
+                                // grown during IBD. Request the current tip before unlocking.
+                                // The ChainHeight handler will either continue IBD (if peer is
+                                // still ahead) or finalize (recalibrate + sync_ready).
+                                info!("[SYNC] IBD caught up to {} — verifying network tip", our_h);
+                                send_to_peer(out_tx, Message::GetChainHeight)?;
                             }
                         } else {
                             // peer_height unknown — ask the peer so IBD can continue
