@@ -988,12 +988,16 @@ async fn handle_messages(
                     }
                     Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {
                         // Stream corrupted (message too large) — ban immediately for 1 hour.
-                        // Attackers sending 4GB/2GB messages from different IPs never reach
-                        // the penalty threshold — immediate ban on first offence.
-                        tracing::warn!("[P2P] {} sent oversized/corrupted message — banning 1h: {}", addr, e);
+                        // Exception: anchor seeds are never banned — just disconnected so the
+                        // anchor reconnect loop re-establishes the connection cleanly.
                         {
                             let mut pm = peers.lock().await;
-                            pm.ban_ip(addr.ip());
+                            if pm.is_anchor_ip(addr.ip()) {
+                                tracing::warn!("[P2P] {} (anchor) corrupted message — disconnecting without ban: {}", addr, e);
+                            } else {
+                                tracing::warn!("[P2P] {} sent oversized/corrupted message — banning 1h: {}", addr, e);
+                                pm.ban_ip(addr.ip());
+                            }
                         }
                         return Err(e);
                     }
