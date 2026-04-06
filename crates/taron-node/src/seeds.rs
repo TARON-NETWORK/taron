@@ -11,6 +11,8 @@ pub const TESTNET_SEEDS: &[&str] = &[
     "185.211.6.168:8333",  // EU (Contabo)
     "82.197.67.49:8333",   // US East (Contabo)
     "46.250.234.67:8333",  // Singapore (Contabo)
+    "90.54.234.150:8333",  // Community seed (pool)
+    "82.127.255.223:8333", // Community seed (pool)
 ];
 
 /// Resolve the effective seed-node list.
