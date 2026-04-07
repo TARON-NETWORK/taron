@@ -412,6 +412,18 @@ impl TaronNode {
                         }
                     }
 
+                    // Proactive tip check in synced mode: even after sync_ready, periodically ask
+                    // peers for their height so we can catch up if we missed NewBlock broadcasts
+                    // (network hiccup, brief disconnect, etc.). The ChainHeight handler will
+                    // trigger IBD automatically if any peer is ahead of us.
+                    if sync_ready.load(Ordering::Relaxed) {
+                        let pm = peers.lock().await;
+                        if pm.outbound_count() > 0 {
+                            debug!("[SYNC] Synced — probing peers for tip");
+                            pm.broadcast(Message::GetChainHeight, None);
+                        }
+                    }
+
                     let (outbound, can_accept) = {
                         let pm = peers.lock().await;
                         (pm.outbound_count(), pm.can_accept(PeerDirection::Outbound))
