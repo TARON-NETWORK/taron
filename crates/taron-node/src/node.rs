@@ -1516,11 +1516,15 @@ async fn handle_messages(
             }
 
             Message::GetBlockLocator => {
-                // Rate-limit: ignore if we already responded within the last 10 seconds.
-                // This breaks the IBD-restart loop caused by fast miners on peers with old code.
-                if last_locator_sent.is_some() {
-                    // IBD in progress for this peer — ignore until last batch resets the throttle
-                    info!("[SYNC] GetBlockLocator from {} throttled — IBD in progress", addr);
+                // Rate-limit: ignore if we responded within the last 30 seconds.
+                // This breaks rapid-fire IBD restart loops while still allowing re-sync
+                // when the peer's tip advances during IBD (tip-growth can prevent the
+                // is_last_batch reset from firing, causing permanent throttle without this).
+                let throttled = last_locator_sent
+                    .map(|t| t.elapsed() < std::time::Duration::from_secs(30))
+                    .unwrap_or(false);
+                if throttled {
+                    debug!("[SYNC] GetBlockLocator from {} throttled (sent <30s ago)", addr);
                     continue;
                 }
                 let locator = blockchain.read().await.generate_block_locator();
